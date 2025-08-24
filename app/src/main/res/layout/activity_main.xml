@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="utf-8"?>
+<RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    tools:context="com.google.ar.core.examples.java.helloar.HelloArActivity">
+
+  <!-- Camera / AR surface -->
+  <android.opengl.GLSurfaceView
+      android:id="@+id/surfaceview"
+      android:layout_width="match_parent"
+      android:layout_height="match_parent"
+      android:layout_alignParentTop="true"
+      android:layout_alignParentStart="true" />
+
+  <!-- Settings (hidden for now) -->
+  <ImageButton
+      android:id="@+id/settings_button"
+      android:layout_width="40dp"
+      android:layout_height="40dp"
+      android:layout_alignParentEnd="true"
+      android:layout_alignParentTop="true"
+      android:layout_margin="16dp"
+      android:src="@drawable/ic_settings"
+      android:background="@android:color/transparent"
+      android:visibility="gone" />
+
+  <!-- Small HUD like the screenshot -->
+  <LinearLayout
+      android:id="@+id/hudContainer"
+      android:layout_width="wrap_content"
+      android:layout_height="wrap_content"
+      android:layout_alignParentStart="true"
+      android:layout_alignParentTop="true"
+      android:layout_margin="12dp"
+      android:orientation="vertical"
+      android:padding="8dp"
+      android:background="#66000000">
+
+    <TextView
+        android:id="@+id/tvEarthState"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Earth: —"
+        android:textColor="@android:color/white"
+        android:textSize="14sp"
+        android:layout_marginTop="4dp"/>
+
+
+    <TextView
+        android:id="@+id/tvLatLng"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="LAT/LNG: —"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvLatLngAcc"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ACCURACY: —"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvAlt"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ALTITUDE: —"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvAltAcc"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ACCURACY: —"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvHeading"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="HEADING: —"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvHeadingAcc"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="ACCURACY: —"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+
+    <TextView
+        android:id="@+id/tvAnchorState"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Anchor: none"
+        android:textColor="#FFFFFF"
+        android:textSize="12sp" />
+  </LinearLayout>
+
+  <!-- Bottom info card you already had -->
+  <TextView
+      android:id="@+id/poseInfoCard"
+      android:layout_width="match_parent"
+      android:layout_height="wrap_content"
+      android:layout_alignParentBottom="true"
+      android:background="#AA000000"
+      android:textColor="#FFFFFF"
+      android:padding="12dp"
+      android:textSize="14sp"
+      android:visibility="gone" />
+
+</RelativeLayout>
