@@ -39,12 +39,8 @@ public class EggRepository {
         Log.d(TAG, "Using default bucket: " + opts.getStorageBucket());
     }
 
-    // If you still want an optional override, keep this but default to the Firebase bucket.
-    // Otherwise you can delete this constructor entirely.
     @Deprecated
-    public EggRepository(@Nullable String unusedBucketUrl) {
-        this();
-    }
+    public EggRepository(@Nullable String unusedBucketUrl) { this(); }
 
     /** Create a draft Firestore document with whatever fields you already have. */
     public Task<DocumentReference> createDraft(EggEntry e) {
@@ -60,10 +56,11 @@ public class EggRepository {
         if (e.horizAcc != null)      doc.put("horizAcc", e.horizAcc);
         if (e.vertAcc != null)       doc.put("vertAcc", e.vertAcc);
 
-//        if (e.quizQuestion != null)  doc.put("quizQuestion", e.quizQuestion);
-//        if (e.quizAnswer != null)    doc.put("quizAnswer", e.quizAnswer);
-
         if (e.poseMatrix != null)    doc.put("poseMatrix", e.poseMatrix);
+
+        // ✅ NEW: persist transcript & quiz on create
+        if (e.speechTranscript != null) doc.put("speechTranscript", e.speechTranscript);
+        if (e.quiz != null)             doc.put("quiz", e.quiz); // List<EggEntry.QuizQuestion>
 
         doc.put("hasMedia", false);
         doc.put("createdAt", FieldValue.serverTimestamp());
@@ -146,21 +143,19 @@ public class EggRepository {
         }
         return ".bin";
     }
-    // In EggRepository.java
+
     public Task<List<EggEntry>> fetchAllEggs() {
         return db.collection("eggs").get().onSuccessTask(snap -> {
             List<EggEntry> out = new ArrayList<>();
             snap.getDocuments().forEach(d -> {
-                EggEntry e = d.toObject(EggEntry.class);
+                EggEntry e = d.toObject(EggEntry.class); // will hydrate quiz automatically
                 if (e != null) { e.id = d.getId(); out.add(e); }
             });
             return Tasks.forResult(out);
         });
     }
 
-    /** Fetch eggs near (lat,lng) within radiusMeters (client-side filter; OK for small datasets). */
     public Task<List<EggEntry>> fetchEggsNear(double lat, double lng, double radiusMeters) {
-        // Simple: get all, filter on device. For large datasets, add a geohash index later.
         return fetchAllEggs().onSuccessTask(list -> {
             List<EggEntry> filtered = new ArrayList<>();
             for (EggEntry e : list) {
@@ -178,7 +173,6 @@ public class EggRepository {
         return storage.getStorage().getReference(storagePath).getDownloadUrl();
     }
 
-    /** Small haversine helper for client-side filtering. */
     private static double distanceMeters(double lat1, double lon1, double lat2, double lon2) {
         double R = 6371000d;
         double dLat = Math.toRadians(lat2 - lat1);
@@ -189,4 +183,11 @@ public class EggRepository {
         return 2*R*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
     }
 
+    // ✅ Optional helper if you ever want to regenerate/patch quiz later
+    public Task<Void> updateQuiz(DocumentReference docRef, @Nullable List<EggEntry.QuizQuestion> quiz) {
+        Map<String, Object> patch = new HashMap<>();
+        patch.put("quiz", quiz);
+        patch.put("updatedAt", FieldValue.serverTimestamp());
+        return docRef.update(patch);
+    }
 }

@@ -17,14 +17,15 @@
   <!-- Settings (hidden for now) -->
   <ImageButton
       android:id="@+id/settings_button"
-      android:layout_width="40dp"
-      android:layout_height="40dp"
+      android:layout_width="48dp"
+      android:layout_height="48dp"
       android:layout_alignParentEnd="true"
       android:layout_alignParentTop="true"
       android:layout_margin="16dp"
       android:src="@drawable/ic_settings"
       android:background="@android:color/transparent"
-      android:visibility="gone" />
+      android:contentDescription="@string/cd_settings"
+      android:visibility="visible" />
 
   <!-- Small HUD like the screenshot -->
   <LinearLayout

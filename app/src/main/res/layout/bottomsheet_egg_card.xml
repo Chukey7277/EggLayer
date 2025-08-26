@@ -170,7 +170,7 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Audio + transcript card -->
+        <!-- Audio + transcript card (only transcript field changed: now wrapped) -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -185,6 +185,7 @@
                 android:layout_height="wrap_content"
                 android:orientation="vertical">
 
+                <!-- header row (unchanged) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -221,20 +222,31 @@
                     android:textStyle="bold"
                     android:visibility="gone" />
 
-                <!-- Editable transcript -->
-                <com.google.android.material.textfield.TextInputEditText
-                    android:id="@+id/transcriptionInput"
+                <!-- Transcript now wrapped in TextInputLayout to match other fields -->
+                <com.google.android.material.textfield.TextInputLayout
+                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:hint="Transcript"
-                    android:inputType="textMultiLine"
-                    android:gravity="top|start"
-                    android:minLines="3"
-                    android:maxLines="8"
-                    android:overScrollMode="always"
-                    android:scrollbars="vertical"/>
+                    android:layout_marginTop="8dp"
+                    app:boxCornerRadiusTopStart="14dp"
+                    app:boxCornerRadiusTopEnd="14dp"
+                    app:boxCornerRadiusBottomStart="14dp"
+                    app:boxCornerRadiusBottomEnd="14dp">
 
-                <!-- Controls -->
+                    <com.google.android.material.textfield.TextInputEditText
+                        android:id="@+id/transcriptionInput"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:minLines="3"
+                        android:maxLines="8"
+                        android:hint="Transcript"
+                        android:gravity="top|start"
+                        android:inputType="textCapSentences|textMultiLine"
+                        android:overScrollMode="always"
+                        android:scrollbars="vertical" />
+                </com.google.android.material.textfield.TextInputLayout>
+
+                <!-- Controls row (unchanged) -->
                 <LinearLayout
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
@@ -242,7 +254,6 @@
                     android:gravity="center"
                     android:orientation="horizontal">
 
-                    <!-- Hold to speak for live transcript -->
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/recordAudioBtn"
                         style="@style/Widget.Material3.Button.TonalButton"
@@ -260,7 +271,6 @@
                         android:layout_width="12dp"
                         android:layout_height="1dp" />
 
-                    <!-- Voice-note playback/record controls -->
                     <LinearLayout
                         android:id="@+id/playbackGroup"
                         android:layout_width="wrap_content"
@@ -317,10 +327,84 @@
                     android:alpha="0.6"
                     android:text="Hold to speak; release to stop. Use “Record” to capture a separate voice note." />
             </LinearLayout>
-
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Action buttons -->
+        <!-- NEW: Quiz preferences (optional) -->
+        <com.google.android.material.card.MaterialCardView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:padding="12dp"
+            app:cardCornerRadius="9dp"
+            app:cardUseCompatPadding="true"
+            app:strokeWidth="0dp">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:text="Quiz (optional)"
+                        android:textSize="16sp"
+                        android:textStyle="bold" />
+
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/quizToggle"
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Create from transcript" />
+                </LinearLayout>
+
+                <LinearLayout
+                    android:id="@+id/quizCountRow"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:gravity="start|center_vertical"
+                    android:orientation="horizontal"
+                    android:visibility="gone">
+
+                    <TextView
+                        android:layout_width="wrap_content"
+                        android:layout_height="wrap_content"
+                        android:text="Questions:" />
+
+                    <com.google.android.material.textfield.TextInputLayout
+                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
+                        android:layout_width="64dp"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="8dp">
+
+                        <com.google.android.material.textfield.TextInputEditText
+                            android:id="@+id/quizCountInput"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:inputType="number"
+                            android:text="3"
+                            android:maxLines="1" />
+                    </com.google.android.material.textfield.TextInputLayout>
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:alpha="0.6"
+                    android:text="If enabled, we’ll auto-generate a short multiple-choice quiz from your transcript." />
+            </LinearLayout>
+        </com.google.android.material.card.MaterialCardView>
+
+        <!-- Action buttons (unchanged) -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
