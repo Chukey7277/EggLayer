@@ -1,13 +1,13 @@
 package com.google.ar.core.examples.java.helloar.ui;
 
 import android.Manifest;
+import android.app.Activity;
+import android.content.ActivityNotFoundException;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Rect;
-import android.media.MediaPlayer;
-import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -38,9 +38,9 @@ import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import com.google.android.material.bottomsheet.BottomSheetDialogFragment;
-import com.google.android.material.chip.Chip;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.textfield.TextInputEditText;
+import com.google.android.material.textfield.TextInputLayout;
 import com.google.ar.core.examples.java.helloar.R;
 
 import java.io.File;
@@ -52,7 +52,14 @@ import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
-/** Bottom sheet to capture egg details + media (+ optional GeoPose snapshot). */
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.auth.FirebaseUser;
+import com.google.firebase.firestore.FieldValue;
+import com.google.firebase.firestore.FirebaseFirestore;
+import com.google.firebase.firestore.ListenerRegistration;
+
+
+/** Bottom sheet to capture egg details + photos (no transcript / audio-note). */
 public class EggCardSheet extends BottomSheetDialogFragment {
 
     // ---------- GeoPose snapshot ----------
@@ -78,13 +85,13 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         }
     }
 
-    // Includes transcript in the callback
+    // Keep the same listener signature so the rest of your app doesn’t change.
     public interface Listener {
         void onSave(String title,
                     String description,
-                    String transcript,
+                    String transcript,     // we will send "" now
                     List<Uri> photoUris,
-                    @Nullable Uri audioUri,
+                    @Nullable Uri audioUri, // we will send null now
                     @Nullable GeoPoseSnapshot geoPose);
         void onCancel();
     }
@@ -96,59 +103,71 @@ public class EggCardSheet extends BottomSheetDialogFragment {
     public void setGeoPoseSnapshot(@Nullable GeoPoseSnapshot snapshot) { this.geoPoseSnapshot = snapshot; }
 
     // ---------- UI ----------
-    private TextInputEditText titleInput, descInput, transcriptInput;
-    private Button addPhotosBtn, recordAudioBtn, cancelBtn, saveBtn;
-    private TextView photoHint, photoEmpty, recordingTimer;
-    private LinearLayout mediaPreviewContainer, playbackGroup;
-    private View photoStrip;
-    private Chip recordingChip;
-    private Button playPauseBtn, reRecordBtn, deleteAudioBtn;
+    private TextInputLayout titleLayout, descLayout;
+    private TextInputEditText titleInput, descInput;
 
-    // ---------- Photo state ----------
+    private Button addPhotosBtn, cancelBtn, saveBtn;
+    private TextView photoHint, photoEmpty;
+    private LinearLayout mediaPreviewContainer;
+    private View photoStrip;
+
+    // ---------- Photos ----------
     private final ArrayList<Uri> pickedPhotoUris = new ArrayList<>();
     private @Nullable Uri cameraTempPhotoUri = null;
 
-    // ---------- Voice-note recording (file) ----------
-    private @Nullable MediaRecorder mediaRecorder = null;
-    private @Nullable MediaPlayer mediaPlayer = null;
-    private boolean isAudioRecording = false;
-    private boolean isPlaying = false;
-    private @Nullable File audioFile = null;
-    private @Nullable Uri audioUri = null;
-
-    // ---------- Live transcription (no file) ----------
+    // ---------- STT: tap (one-shot) + hold (live) ----------
     private @Nullable SpeechRecognizer speechRecognizer = null;
     private Intent speechRecognizerIntent;
-    private boolean userIsHolding = false;
     private boolean recognizerActive = false;
-    private final StringBuilder transcriptBuffer = new StringBuilder(); // committed text
-    private String lastFinal = "";
-    private String lastPartial = "";
 
-    // Touch / hold helpers
+    private enum VoiceTarget { TITLE, DESC }
+    @Nullable private VoiceTarget currentHoldTarget = null;
+    @Nullable private TextInputEditText currentHoldInput = null;
+    @Nullable private VoiceTarget pendingTapTarget = null; // keep tap target locally
+
+    // Tap vs Hold dispatcher
+    private static final int HOLD_THRESHOLD_MS = 180;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private long holdStartMs = 0L;
+    private boolean holdStarted = false;
     private final Rect holdBounds = new Rect();
     private final Handler holdHandler = new Handler(Looper.getMainLooper());
     private boolean outOfBounds = false;
     private boolean interceptingParents = false;
     private int touchSlopPx = 16;
-    private static final int CANCEL_GRACE_MS = 350;
 
-    // ---------- Timers / handlers ----------
-    private final Handler uiHandler = new Handler(Looper.getMainLooper());
-    private long recordStartTime = 0L;
+
+    @Nullable private com.google.firebase.firestore.ListenerRegistration quizReg;
+
+
+
+    // Timer shown as helper text on the active TextInputLayout
+    private long timerStartedAt = 0L;
+    private final Runnable timerTick = new Runnable() {
+        @Override public void run() {
+            if (currentHoldTarget == null) return;
+            long s = Math.max(0, (System.currentTimeMillis() - timerStartedAt) / 1000);
+            String mmss = String.format(Locale.getDefault(), "%02d:%02d", s / 60, s % 60);
+            getLayoutForTarget(currentHoldTarget).setHelperText("Listening… " + mmss);
+            uiHandler.postDelayed(this, 500);
+        }
+    };
+
+    // To revert on cancel-slide-away vs. accumulate during hold
+    private String baseTextBeforeHold = "";
+    private String committedTextDuringHold = "";
 
     // ---------- Activity Result Launchers ----------
     private ActivityResultLauncher<String> requestCameraPermission;
-    private ActivityResultLauncher<String> requestMicPermissionTranscribe;
-    private ActivityResultLauncher<String> requestMicPermissionAudio;
+    private ActivityResultLauncher<String> requestMicPermission;
     private ActivityResultLauncher<String> requestReadImagesPermission;
     private ActivityResultLauncher<Uri>    takePictureLauncher;
     private ActivityResultLauncher<String> pickMultipleImagesLauncher;
+    private ActivityResultLauncher<Intent> sttLauncher; // one-shot STT (tap)
 
     @Override public void onAttach(@NonNull Context context) {
         super.onAttach(context);
         registerLaunchers();
-        initSpeechRecognizer();
     }
 
     @Nullable
@@ -158,176 +177,327 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                              @Nullable Bundle savedInstanceState) {
         View root = inflater.inflate(R.layout.bottomsheet_egg_card, container, false);
 
-        // Inputs
+        titleLayout = root.findViewById(R.id.titleLayout);
+        descLayout  = root.findViewById(R.id.descLayout);
         titleInput  = root.findViewById(R.id.titleInput);
         descInput   = root.findViewById(R.id.descInput);
-        transcriptInput = root.findViewById(R.id.transcriptionInput);
 
-        // Photos
-        addPhotosBtn           = root.findViewById(R.id.addPhotosBtn);
-        photoHint              = root.findViewById(R.id.photoHint);
-        photoEmpty             = root.findViewById(R.id.photoEmpty);
-        mediaPreviewContainer  = root.findViewById(R.id.mediaPreviewContainer);
-        photoStrip             = root.findViewById(R.id.photoStrip);
+        addPhotosBtn          = root.findViewById(R.id.addPhotosBtn);
+        photoHint             = root.findViewById(R.id.photoHint);
+        photoEmpty            = root.findViewById(R.id.photoEmpty);
+        mediaPreviewContainer = root.findViewById(R.id.mediaPreviewContainer);
+        photoStrip            = root.findViewById(R.id.photoStrip);
 
-        // Audio / transcript UI
-        recordAudioBtn  = root.findViewById(R.id.recordAudioBtn); // HOLD to live-transcribe
-        playbackGroup   = root.findViewById(R.id.playbackGroup);
-        playPauseBtn    = root.findViewById(R.id.playPauseBtn);
-        reRecordBtn     = root.findViewById(R.id.reRecordBtn);    // tap to record/stop voice-note file
-        deleteAudioBtn  = root.findViewById(R.id.deleteAudioBtn);
-        recordingChip   = root.findViewById(R.id.recordingChip);
-        recordingTimer  = root.findViewById(R.id.recordingTimer);
-
-        // Actions
         cancelBtn = root.findViewById(R.id.cancelBtn);
         saveBtn   = root.findViewById(R.id.saveBtn);
 
-        // Touch slop / long-click
         touchSlopPx = ViewConfiguration.get(requireContext()).getScaledTouchSlop();
-        recordAudioBtn.setLongClickable(false);
+
+        // Wire the small side-mics (tap = one-shot; hold = live)
+        wireFieldMic(titleLayout, titleInput, VoiceTarget.TITLE);
+        wireFieldMic(descLayout,  descInput,  VoiceTarget.DESC);
 
         addPhotosBtn.setOnClickListener(v -> showPhotoOptions());
-
-        // HOLD to live-transcribe — robust with large bounds + grace
-        recordAudioBtn.setOnTouchListener((v, event) -> {
-            final int action = event.getActionMasked();
-            switch (action) {
-                case MotionEvent.ACTION_DOWN: {
-                    if (isAudioRecording) {
-                        Toast.makeText(requireContext(), "Stop voice-note recording first", Toast.LENGTH_SHORT).show();
-                        return true;
-                    }
-                    setParentsDisallowIntercept(v, true);
-                    v.setPressed(true);
-
-                    v.getGlobalVisibleRect(holdBounds);
-                    int margin = (int) dp(160); // generous wiggle room
-                    holdBounds.inset(-margin, -margin);
-                    outOfBounds = false;
-                    holdHandler.removeCallbacksAndMessages(null);
-
-                    if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
-                            != PackageManager.PERMISSION_GRANTED) {
-                        requestMicPermissionTranscribe.launch(Manifest.permission.RECORD_AUDIO);
-                        return true;
-                    }
-                    if (!userIsHolding) beginHoldToTranscribe();
-                    return true;
-                }
-
-                case MotionEvent.ACTION_MOVE: {
-                    boolean fingerInside = holdBounds.contains((int) event.getRawX(), (int) event.getRawY());
-                    if (!fingerInside && !outOfBounds) {
-                        outOfBounds = true;
-                        holdHandler.postDelayed(() -> {
-                            if (outOfBounds && userIsHolding) {
-                                endHoldToTranscribe(true);
-                                Toast.makeText(requireContext(), "Listening cancelled", Toast.LENGTH_SHORT).show();
-                                v.setPressed(false);
-                                setParentsDisallowIntercept(v, false);
-                            }
-                        }, CANCEL_GRACE_MS);
-                    } else if (fingerInside && outOfBounds) {
-                        outOfBounds = false;
-                        holdHandler.removeCallbacksAndMessages(null);
-                    }
-                    return true;
-                }
-
-                case MotionEvent.ACTION_UP: {
-                    holdHandler.removeCallbacksAndMessages(null);
-                    boolean fingerInside = holdBounds.contains((int) event.getRawX(), (int) event.getRawY());
-                    if (userIsHolding) endHoldToTranscribe(!fingerInside); // cancel if lifted outside
-                    v.setPressed(false);
-                    setParentsDisallowIntercept(v, false);
-                    v.performClick();
-                    return true;
-                }
-
-                case MotionEvent.ACTION_CANCEL: {
-                    holdHandler.removeCallbacksAndMessages(null);
-                    if (userIsHolding) endHoldToTranscribe(true);
-                    v.setPressed(false);
-                    setParentsDisallowIntercept(v, false);
-                    return true;
-                }
-            }
-            return true;
-        });
-
-        // Tap to record/stop voice-note (file)
-        reRecordBtn.setOnClickListener(v -> {
-            if (userIsHolding) {
-                Toast.makeText(requireContext(), "Release the hold-to-speak first", Toast.LENGTH_SHORT).show();
-                return;
-            }
-            if (isAudioRecording) {
-                stopAudioRecordingAndSave();
-            } else {
-                if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
-                        != PackageManager.PERMISSION_GRANTED) {
-                    requestMicPermissionAudio.launch(Manifest.permission.RECORD_AUDIO);
-                } else {
-                    startAudioRecording();
-                }
-            }
-        });
-
-        playPauseBtn.setOnClickListener(v -> togglePlayback());
-
-        deleteAudioBtn.setOnClickListener(v -> {
-            stopPlaybackIfNeeded();
-            clearAudioSelection();
-            Toast.makeText(requireContext(), "Audio removed", Toast.LENGTH_SHORT).show();
-        });
-
-        cancelBtn.setOnClickListener(v -> {
-            if (listener != null) listener.onCancel();
-            dismissAllowingStateLoss();
-        });
-
+        cancelBtn.setOnClickListener(v -> { if (listener != null) listener.onCancel(); dismissAllowingStateLoss(); });
         saveBtn.setOnClickListener(v -> {
+            String title = safeText(titleInput);
+            String desc  = safeText(descInput);
+
+            // (Optional) keep existing callback for your app logic
             if (listener != null) {
-                String title = safeText(titleInput);
-                String desc  = safeText(descInput);
-                String transcript = safeText(transcriptInput);
-                listener.onSave(title, desc, transcript, new ArrayList<>(pickedPhotoUris), audioUri, geoPoseSnapshot);
+                listener.onSave(title, desc, /*transcript*/"", new ArrayList<>(pickedPhotoUris), /*audio*/null, geoPoseSnapshot);
             }
+
+            // Kick off quiz generation via Firestore
+            requestQuizGeneration(title, desc);
+
+            // You can dismiss here or after the quiz arrives; up to you.
             dismissAllowingStateLoss();
         });
 
+
+        initSpeechRecognizer();
         refreshPhotoUI();
-        refreshAudioUI();
         return root;
     }
 
     @Override public void onDestroyView() {
         super.onDestroyView();
-        endHoldToTranscribe(true);
-        stopAndReleaseRecorder();
-        stopPlaybackIfNeeded();
+        if (quizReg != null) { quizReg.remove(); quizReg = null; }
+        stopLiveIfNeeded(true);
         if (speechRecognizer != null) {
             try { speechRecognizer.destroy(); } catch (Exception ignored) {}
             speechRecognizer = null;
         }
     }
 
-    // ---------- Photo helpers ----------
+
+    // --------------------------- WIRING (tap + hold) ---------------------------
+    private void wireFieldMic(TextInputLayout layout, TextInputEditText input, VoiceTarget target) {
+        layout.post(() -> {
+            View endIcon = layout.findViewById(com.google.android.material.R.id.text_input_end_icon);
+
+            // Always wire tap for one-shot STT (reliable across OEMs).
+            layout.setEndIconOnClickListener(v -> startTapSTT(target));
+
+            if (endIcon == null) return; // tap already wired above
+
+            // Long-press to start live dictation (simpler & more reliable than custom threshold).
+            layout.setEndIconOnLongClickListener(v -> {
+                if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
+                        != PackageManager.PERMISSION_GRANTED) {
+                    requestMicPermission.launch(Manifest.permission.RECORD_AUDIO);
+                    return true;
+                }
+                // Prep state for hold session
+                v.getGlobalVisibleRect(holdBounds);
+                int margin = (int) dp(96);
+                holdBounds.inset(-margin, -margin);
+                outOfBounds = false;
+                baseTextBeforeHold = safeText(input);
+                committedTextDuringHold = baseTextBeforeHold; // accumulate from baseline
+
+                setParentsDisallowIntercept(v, true); // avoid parent scroll eating events
+                beginLiveFor(target, input);
+                return true;
+            });
+
+            // OnTouch now only handles drag-to-cancel and release; it no longer starts the session.
+            endIcon.setOnTouchListener((v, ev) -> {
+                switch (ev.getActionMasked()) {
+                    case MotionEvent.ACTION_MOVE: {
+                        if (currentHoldTarget != null) {
+                            boolean inside = holdBounds.contains((int) ev.getRawX(), (int) ev.getRawY());
+                            if (!inside && !outOfBounds) {
+                                outOfBounds = true;
+                                holdHandler.postDelayed(() -> {
+                                    if (outOfBounds && currentHoldTarget != null) {
+                                        stopLiveIfNeeded(true);
+                                        Toast.makeText(requireContext(), "Cancelled", Toast.LENGTH_SHORT).show();
+                                    }
+                                }, 250);
+                            } else if (inside && outOfBounds) {
+                                outOfBounds = false;
+                                holdHandler.removeCallbacksAndMessages(null);
+                            }
+                        }
+                        return false; // allow click/long-click detection
+                    }
+                    case MotionEvent.ACTION_UP: {
+                        holdHandler.removeCallbacksAndMessages(null);
+                        if (currentHoldTarget != null) {
+                            boolean inside = holdBounds.contains((int) ev.getRawX(), (int) ev.getRawY());
+                            stopLiveIfNeeded(!inside);
+                            setParentsDisallowIntercept(v, false);
+                        }
+                        return false; // let click fire if no hold occurred
+                    }
+                    case MotionEvent.ACTION_CANCEL: {
+                        holdHandler.removeCallbacksAndMessages(null);
+                        if (currentHoldTarget != null) {
+                            stopLiveIfNeeded(true);
+                            setParentsDisallowIntercept(v, false);
+                        }
+                        return false;
+                    }
+                }
+                return false;
+            });
+        });
+    }
+
+    private void requestQuizGeneration(String title, String description) {
+        FirebaseFirestore db = FirebaseFirestore.getInstance();
+        FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
+
+        // Write a new request doc
+        java.util.Map<String, Object> req = new java.util.HashMap<>();
+        req.put("uid", user != null ? user.getUid() : "anon");
+        req.put("title", title);
+        req.put("description", description);
+        req.put("model", "gemini-2.5-flash");   // same as your Function
+        req.put("status", "pending");
+        req.put("createdAt", FieldValue.serverTimestamp());
+
+        Toast.makeText(requireContext(), "Generating quiz…", Toast.LENGTH_SHORT).show();
+
+        db.collection("quizRequests").add(req)
+                .addOnSuccessListener(ref -> {
+                    // Listen for the Cloud Function to write back the result
+                    if (quizReg != null) { quizReg.remove(); }
+                    quizReg = ref.addSnapshotListener((snap, e) -> {
+                        if (e != null || snap == null || !snap.exists()) return;
+                        String status = snap.getString("status");
+                        if ("complete".equals(status)) {
+                            // Quiz JSON is in the "quiz" field
+                            Object quizObj = snap.get("quiz");
+                            Toast.makeText(requireContext(), "Quiz ready!", Toast.LENGTH_SHORT).show();
+
+                            // TODO: navigate to your Quiz screen / render dialog / etc.
+                            // Example: pass `quizObj` to your activity via a callback
+                            // or store it where your UI can pick it up.
+
+                            // Stop listening once done
+                            if (quizReg != null) { quizReg.remove(); quizReg = null; }
+                        } else if ("error".equals(status)) {
+                            String msg = snap.getString("error");
+                            Toast.makeText(requireContext(), "Quiz error: " + msg, Toast.LENGTH_LONG).show();
+                            if (quizReg != null) { quizReg.remove(); quizReg = null; }
+                        }
+                    });
+                })
+                .addOnFailureListener(err ->
+                        Toast.makeText(requireContext(), "Request failed: " + err.getMessage(), Toast.LENGTH_LONG).show()
+                );
+    }
+
+
+
+    private void startTapSTT(VoiceTarget target) {
+        if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestMicPermission.launch(Manifest.permission.RECORD_AUDIO);
+            return;
+        }
+        Intent i = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        i.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        i.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        i.putExtra(RecognizerIntent.EXTRA_PROMPT,
+                target == VoiceTarget.TITLE ? "Speak the title" : "Speak the description");
+        try {
+            // Remember the target locally; do not rely on round-tripping custom extras.
+            pendingTapTarget = target;
+            sttLauncher.launch(i);
+        } catch (ActivityNotFoundException e) {
+            Toast.makeText(requireContext(), "Speech recognition not available", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void beginLiveFor(VoiceTarget target, TextInputEditText input) {
+        if (!SpeechRecognizer.isRecognitionAvailable(requireContext())) {
+            Toast.makeText(requireContext(), "Speech recognition not available", Toast.LENGTH_LONG).show();
+            return;
+        }
+        currentHoldTarget = target;
+        currentHoldInput = input;
+        holdStarted = true;
+
+        // UI: helper text timer under the active field
+        timerStartedAt = System.currentTimeMillis();
+        getLayoutForTarget(target).setHelperText("Listening… 00:00");
+        uiHandler.postDelayed(timerTick, 300);
+
+        if (speechRecognizer == null) initSpeechRecognizer();
+        startLiveRecognition();
+    }
+
+    private void stopLiveIfNeeded(boolean cancel) {
+        if (currentHoldTarget == null) return;
+
+        // Stop recognizer
+        try {
+            if (speechRecognizer != null) {
+                if (cancel) speechRecognizer.cancel(); else speechRecognizer.stopListening();
+            }
+        } catch (Exception ignored) {}
+        recognizerActive = false;
+
+        // UI reset
+        uiHandler.removeCallbacks(timerTick);
+        getLayoutForTarget(currentHoldTarget).setHelperText(null);
+
+        // If cancelled, revert to text before hold
+        if (cancel && currentHoldInput != null) {
+            currentHoldInput.setText(baseTextBeforeHold);
+            if (currentHoldInput.getText() != null)
+                currentHoldInput.setSelection(currentHoldInput.getText().length());
+        }
+
+        currentHoldTarget = null;
+        currentHoldInput = null;
+        holdStarted = false;
+    }
+
+    private TextInputLayout getLayoutForTarget(VoiceTarget t) {
+        return (t == VoiceTarget.TITLE) ? titleLayout : descLayout;
+    }
+
+    // --------------------------- SpeechRecognizer (live) ---------------------------
+    private void initSpeechRecognizer() {
+        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(requireContext());
+        speechRecognizer.setRecognitionListener(new RecognitionListener() {
+            @Override public void onReadyForSpeech(Bundle params) {}
+            @Override public void onBeginningOfSpeech() {}
+            @Override public void onRmsChanged(float rmsdB) {}
+            @Override public void onBufferReceived(byte[] buffer) {}
+            @Override public void onEndOfSpeech() {}
+
+            @Override public void onError(int error) {
+                recognizerActive = false;
+                // restart while still holding
+                if (currentHoldTarget != null) uiHandler.postDelayed(EggCardSheet.this::startLiveRecognition, 200);
+            }
+
+            @Override public void onResults(Bundle results) {
+                List<String> list = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (currentHoldInput != null && list != null && !list.isEmpty()) {
+                    String out = TextUtils.isEmpty(committedTextDuringHold) ? list.get(0)
+                            : committedTextDuringHold + " " + list.get(0);
+                    currentHoldInput.setText(out);
+                    currentHoldInput.setSelection(out.length());
+                    committedTextDuringHold = out; // accumulate across bursts
+                }
+                recognizerActive = false;
+                // keep going while holding (continues dictation)
+                if (currentHoldTarget != null) startLiveRecognition();
+            }
+
+            @Override public void onPartialResults(Bundle partialResults) {
+                if (currentHoldInput == null) return;
+                List<String> list = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
+                if (list == null || list.isEmpty()) return;
+                String preview = committedTextDuringHold;
+                if (!TextUtils.isEmpty(preview)) preview += " ";
+                preview += list.get(0);
+                currentHoldInput.setText(preview);
+                currentHoldInput.setSelection(preview.length());
+            }
+            @Override public void onEvent(int eventType, Bundle params) {}
+        });
+
+        speechRecognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, requireContext().getPackageName());
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 6000);
+        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6000);
+    }
+
+    private void startLiveRecognition() {
+        if (speechRecognizer == null || recognizerActive) return;
+        try {
+            recognizerActive = true;
+            speechRecognizer.startListening(speechRecognizerIntent);
+        } catch (Exception e) {
+            recognizerActive = false;
+        }
+    }
+
+    // --------------------------- Photos ---------------------------
     private void registerLaunchers() {
         requestCameraPermission = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(),
                 granted -> { if (granted) launchCameraNow(); }
         );
 
-        requestMicPermissionTranscribe = registerForActivityResult(
+        requestMicPermission = registerForActivityResult(
                 new ActivityResultContracts.RequestPermission(),
-                granted -> { if (granted) beginHoldToTranscribe(); }
-        );
-
-        requestMicPermissionAudio = registerForActivityResult(
-                new ActivityResultContracts.RequestPermission(),
-                granted -> { if (granted) startAudioRecording(); }
+                granted -> {
+                    if (!granted) {
+                        Toast.makeText(requireContext(), "Microphone permission denied", Toast.LENGTH_SHORT).show();
+                    }
+                }
         );
 
         requestReadImagesPermission = registerForActivityResult(
@@ -362,6 +532,27 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                             refreshPhotoUI();
                         }
                     }
+                }
+        );
+
+        // one-shot (tap) STT result sink
+        sttLauncher = registerForActivityResult(
+                new ActivityResultContracts.StartActivityForResult(),
+                res -> {
+                    if (res.getResultCode() != Activity.RESULT_OK || res.getData() == null) return;
+                    ArrayList<String> list = res.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                    if (list == null || list.isEmpty() || pendingTapTarget == null) return;
+                    String text = list.get(0);
+                    if (pendingTapTarget == VoiceTarget.TITLE) {
+                        titleInput.setText(text);
+                        titleInput.setSelection(text.length());
+                    } else {
+                        String cur = safeText(descInput);
+                        String merged = cur.isEmpty() ? text : (cur.endsWith(" ") ? cur + text : cur + " " + text);
+                        descInput.setText(merged);
+                        descInput.setSelection(merged.length());
+                    }
+                    pendingTapTarget = null; // clear after use
                 }
         );
     }
@@ -445,354 +636,7 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         }
     }
 
-    // ---------- Live transcription ----------
-    private void beginHoldToTranscribe() {
-        userIsHolding = true;
-
-        // Show current committed buffer (keep any edits)
-        runOnUi(() -> {
-            transcriptInput.setText(transcriptBuffer.toString());
-            transcriptInput.setSelection(transcriptInput.getText().length());
-        });
-
-        recordingChip.setVisibility(View.VISIBLE);
-        recordingTimer.setVisibility(View.VISIBLE);
-        recordAudioBtn.setText("Release to Stop");
-        recordStartTime = System.currentTimeMillis();
-        uiHandler.post(transcribeTimerRunnable);
-
-        startLiveRecognition();
-    }
-
-    private void endHoldToTranscribe(boolean cancel) {
-        if (!userIsHolding) return;
-        userIsHolding = false;
-
-        if (cancel && !lastPartial.isEmpty()) {
-            commitFinal(lastPartial); // carry over what was spoken just before cancel/timeout
-        }
-
-        stopLiveRecognition(cancel);
-
-        recordingChip.setVisibility(View.GONE);
-        recordingTimer.setVisibility(View.GONE);
-        uiHandler.removeCallbacks(transcribeTimerRunnable);
-        recordAudioBtn.setText("Hold to Speak");
-        lastFinal = "";
-        lastPartial = "";
-    }
-
-    private final Runnable transcribeTimerRunnable = new Runnable() {
-        @Override public void run() {
-            if (!userIsHolding) return;
-            long elapsedSec = (System.currentTimeMillis() - recordStartTime) / 1000;
-            recordingTimer.setText(String.format(Locale.getDefault(), "%02d:%02d", elapsedSec / 60, elapsedSec % 60));
-            uiHandler.postDelayed(this, 500);
-        }
-    };
-
-    private void initSpeechRecognizer() {
-        if (!SpeechRecognizer.isRecognitionAvailable(requireContext())) {
-            Toast.makeText(requireContext(), "Speech recognition not available on this device", Toast.LENGTH_LONG).show();
-            return;
-        }
-
-        speechRecognizer = SpeechRecognizer.createSpeechRecognizer(requireContext());
-        speechRecognizer.setRecognitionListener(new RecognitionListener() {
-            @Override public void onReadyForSpeech(Bundle params) {}
-            @Override public void onBeginningOfSpeech() {}
-            @Override public void onRmsChanged(float rmsdB) {}
-            @Override public void onBufferReceived(byte[] buffer) {}
-            @Override public void onEndOfSpeech() {}
-
-            @Override public void onError(int error) {
-                recognizerActive = false;
-                if (!lastPartial.isEmpty()) {
-                    commitFinal(lastPartial);
-                    lastPartial = "";
-                }
-                if (userIsHolding) {
-                    uiHandler.postDelayed(EggCardSheet.this::startLiveRecognition, 250);
-                }
-            }
-
-            @Override public void onResults(Bundle results) {
-                List<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if (matches != null && !matches.isEmpty()) {
-                    String utterance = normalize(matches.get(0));
-                    commitFinal(utterance);
-                }
-                lastPartial = "";
-                recognizerActive = false;
-                if (userIsHolding) startLiveRecognition();
-            }
-
-            @Override public void onPartialResults(Bundle partialResults) {
-                List<String> partial = partialResults.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-                if (!userIsHolding) return;
-                if (partial != null && !partial.isEmpty()) {
-                    String p = normalize(partial.get(0));
-                    lastPartial = p;
-
-                    // Build live preview with word-level overlap-safe tail
-                    String previewTail = trimOverlapByWords(transcriptBuffer.toString(), p, 12);
-                    String committed = transcriptBuffer.toString();
-                    String preview = committed + (committed.isEmpty() ? "" : " ") + previewTail;
-                    final String display = preview.trim();
-
-                    runOnUi(() -> {
-                        String currentStr = transcriptInput.getText() == null ? "" : transcriptInput.getText().toString();
-                        if (currentStr.startsWith(committed)) {
-                            transcriptInput.setText(display);
-                            transcriptInput.setSelection(display.length());
-                        }
-                    });
-                }
-            }
-
-            @Override public void onEvent(int eventType, Bundle params) {}
-        });
-
-        speechRecognizerIntent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, requireContext().getPackageName());
-
-        // Increase silence windows so normal pauses don't force frequent resets
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 6000);
-        speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 6000);
-
-        // Optional: lock language if you need
-        // speechRecognizerIntent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.getDefault().toString());
-    }
-
-    private void startLiveRecognition() {
-        if (speechRecognizer == null || recognizerActive) return;
-        try {
-            recognizerActive = true;
-            speechRecognizer.startListening(speechRecognizerIntent);
-        } catch (Exception e) {
-            recognizerActive = false;
-        }
-    }
-
-    private void stopLiveRecognition(boolean cancel) {
-        if (speechRecognizer == null) return;
-        try { if (cancel) speechRecognizer.cancel(); else speechRecognizer.stopListening(); }
-        catch (Exception ignored) {}
-        recognizerActive = false;
-    }
-
-    private void commitFinal(String utterance) {
-        String toAppend = trimOverlapByWords(transcriptBuffer.toString(), utterance, 12);
-        if (!toAppend.isEmpty()) {
-            if (transcriptBuffer.length() > 0 && !transcriptBuffer.toString().endsWith(" "))
-                transcriptBuffer.append(' ');
-            transcriptBuffer.append(toAppend);
-        }
-        lastFinal = utterance;
-
-        if (userIsHolding) {
-            final String display = transcriptBuffer.toString();
-            runOnUi(() -> {
-                String committed = transcriptBuffer.toString();
-                String currentStr = transcriptInput.getText() == null ? "" : transcriptInput.getText().toString();
-                if (!currentStr.startsWith(committed)) return;
-                transcriptInput.setText(display);
-                transcriptInput.setSelection(display.length());
-            });
-        }
-    }
-
-    // ---- Overlap helpers (word-level; robust across resets) ----
-    private static String trimOverlapByWords(String committed, String fragment, int maxWords) {
-        committed = committed == null ? "" : committed.trim();
-        fragment  = fragment  == null ? "" : fragment.trim();
-        if (fragment.isEmpty()) return "";
-
-        String[] a = committed.isEmpty() ? new String[0] : committed.split("\\s+");
-        String[] b = fragment.split("\\s+");
-        int maxK = Math.min(maxWords, Math.min(a.length, b.length));
-
-        for (int k = maxK; k > 0; k--) {
-            String suffixA = joinLastWordsNormalized(a, k);
-            String prefixB = joinFirstWordsNormalized(b, k);
-            if (suffixA.equals(prefixB)) {
-                return joinWords(b, k, b.length); // cut the overlapping head
-            }
-        }
-        return fragment;
-    }
-
-    private static String joinLastWordsNormalized(String[] words, int k) {
-        int n = words.length;
-        if (k <= 0 || n == 0) return "";
-        StringBuilder sb = new StringBuilder();
-        for (int i = n - k; i < n; i++) {
-            if (i < 0) continue;
-            if (sb.length() > 0) sb.append(' ');
-            sb.append(normalizeWord(words[i]));
-        }
-        return sb.toString();
-    }
-
-    private static String joinFirstWordsNormalized(String[] words, int k) {
-        int n = words.length;
-        if (k <= 0 || n == 0) return "";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(k, n); i++) {
-            if (sb.length() > 0) sb.append(' ');
-            sb.append(normalizeWord(words[i]));
-        }
-        return sb.toString();
-    }
-
-    private static String joinWords(String[] words, int start, int end) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = Math.max(0, start); i < Math.min(end, words.length); i++) {
-            if (sb.length() > 0) sb.append(' ');
-            sb.append(words[i]);
-        }
-        return sb.toString();
-    }
-
-    private static String normalizeWord(String w) {
-        if (w == null) return "";
-        // lower-case and strip leading/trailing punctuation; collapse apostrophes smartly
-        String s = w.toLowerCase(Locale.US).replaceAll("^[\\p{Punct}]+|[\\p{Punct}]+$", "");
-        return s.replaceAll("\\s+", " ");
-    }
-
-    private static String normalize(String s) {
-        if (s == null) return "";
-        return s.trim().replaceAll("\\s+", " ");
-    }
-
-    // ---------- Voice-note audio recording (file) ----------
-    private void startAudioRecording() {
-        if (isAudioRecording) return;
-
-        try {
-            audioFile = createTempAudioFile(requireContext());
-            mediaRecorder = new MediaRecorder();
-            mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
-            mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
-            mediaRecorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
-            mediaRecorder.setOutputFile(audioFile.getAbsolutePath());
-            mediaRecorder.prepare();
-            mediaRecorder.start();
-
-            isAudioRecording = true;
-            recordStartTime = System.currentTimeMillis();
-
-            recordingChip.setVisibility(View.VISIBLE);
-            recordingTimer.setVisibility(View.VISIBLE);
-            reRecordBtn.setText("Stop Recording");
-            uiHandler.post(audioTimerRunnable);
-
-        } catch (Exception e) {
-            Toast.makeText(getContext(), "Recording failed", Toast.LENGTH_SHORT).show();
-            stopAndReleaseRecorder();
-            isAudioRecording = false;
-            reRecordBtn.setText("Record");
-        }
-    }
-
-    private final Runnable audioTimerRunnable = new Runnable() {
-        @Override public void run() {
-            if (!isAudioRecording) return;
-            long elapsedSec = (System.currentTimeMillis() - recordStartTime) / 1000;
-            recordingTimer.setText(String.format(Locale.getDefault(), "%02d:%02d", elapsedSec / 60, elapsedSec % 60));
-            uiHandler.postDelayed(this, 500);
-        }
-    };
-
-    private void stopAudioRecordingAndSave() {
-        if (!isAudioRecording) return;
-        try { if (mediaRecorder != null) mediaRecorder.stop(); } catch (RuntimeException ignored) {}
-        finally { stopAndReleaseRecorder(); }
-
-        isAudioRecording = false;
-        uiHandler.removeCallbacks(audioTimerRunnable);
-        recordingChip.setVisibility(View.GONE);
-        recordingTimer.setVisibility(View.GONE);
-        reRecordBtn.setText("Record");
-
-        if (audioFile != null && audioFile.exists()) {
-            audioUri = FileProvider.getUriForFile(
-                    requireContext(),
-                    requireContext().getPackageName() + ".fileprovider",
-                    audioFile
-            );
-            Toast.makeText(getContext(), "Recording saved", Toast.LENGTH_SHORT).show();
-        }
-        refreshAudioUI();
-    }
-
-    private void stopAndReleaseRecorder() {
-        if (mediaRecorder != null) {
-            try { mediaRecorder.stop(); } catch (Exception ignored) {}
-            try { mediaRecorder.release(); } catch (Exception ignored) {}
-            mediaRecorder = null;
-        }
-    }
-
-    private void refreshAudioUI() {
-        boolean hasAudio = (audioUri != null);
-        playbackGroup.setVisibility(hasAudio ? View.VISIBLE : View.GONE);
-        playPauseBtn.setText(isPlaying ? "Pause" : "Play");
-    }
-
-    private void togglePlayback() {
-        if (audioUri == null) return;
-        if (isPlaying) {
-            stopPlaybackIfNeeded();
-            playPauseBtn.setText("Play");
-        } else {
-            try {
-                mediaPlayer = new MediaPlayer();
-                mediaPlayer.setDataSource(requireContext(), audioUri);
-                mediaPlayer.setOnCompletionListener(mp -> {
-                    isPlaying = false;
-                    playPauseBtn.setText("Play");
-                });
-                mediaPlayer.prepare();
-                mediaPlayer.start();
-                isPlaying = true;
-                playPauseBtn.setText("Pause");
-            } catch (Exception e) {
-                stopPlaybackIfNeeded();
-                Toast.makeText(requireContext(), "Playback failed", Toast.LENGTH_SHORT).show();
-            }
-        }
-    }
-
-    private void stopPlaybackIfNeeded() {
-        if (mediaPlayer != null) {
-            try { mediaPlayer.stop(); } catch (Exception ignored) {}
-            try { mediaPlayer.release(); } catch (Exception ignored) {}
-            mediaPlayer = null;
-        }
-        isPlaying = false;
-        if (playPauseBtn != null) playPauseBtn.setText("Play");
-    }
-
-    private void clearAudioSelection() {
-        stopPlaybackIfNeeded();
-        if (audioFile != null && audioFile.exists()) {
-            //noinspection ResultOfMethodCallIgnored
-            audioFile.delete();
-        }
-        audioUri = null;
-        audioFile = null;
-        recordingTimer.setText("00:00");
-        recordingTimer.setVisibility(View.GONE);
-        playbackGroup.setVisibility(View.GONE);
-        reRecordBtn.setText("Record");
-    }
-
-    // ---------- Files & utils ----------
+    // --------------------------- Utils ---------------------------
     private static File createTempImageFile(@NonNull Context ctx) throws IOException {
         String time = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
         File dir = new File(ctx.getExternalFilesDir(null), "tempimg");
@@ -801,22 +645,10 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         return File.createTempFile("IMG_" + time + "_", ".jpg", dir);
     }
 
-    private static File createTempAudioFile(@NonNull Context ctx) throws IOException {
-        String time = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        File dir = new File(ctx.getExternalFilesDir(null), "tempaudio");
-        if (!dir.exists()) //noinspection ResultOfMethodCallIgnored
-            dir.mkdirs();
-        return File.createTempFile("AUD_" + time + "_", ".m4a", dir);
-    }
-
     private static String safeText(@Nullable TextInputEditText et) {
         if (et == null || et.getText() == null) return "";
         String s = et.getText().toString();
         return TextUtils.isEmpty(s) ? "" : s.trim();
-    }
-
-    private void runOnUi(Runnable r) {
-        if (isAdded()) requireActivity().runOnUiThread(r);
     }
 
     private float dp(float v) {

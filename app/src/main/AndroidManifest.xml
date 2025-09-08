@@ -51,7 +51,7 @@
 
     <!-- Single launcher: SplashActivity -->
     <activity
-        android:name=".SplashActivity"
+        android:name=".HomeActivity"
         android:exported="true"
         android:theme="@style/Theme.AppCompat.Light.NoActionBar"
         android:screenOrientation="locked"
@@ -64,7 +64,7 @@
 
     <!-- Home screen (no launcher) -->
     <activity
-        android:name=".HomeActivity"
+        android:name=".SplashActivity"
         android:exported="false" />
 
     <!-- AR scene (no launcher) -->

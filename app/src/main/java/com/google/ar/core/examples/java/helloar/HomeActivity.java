@@ -15,6 +15,7 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.content.ContextCompat;
 
 import com.google.android.material.button.MaterialButton;
+import com.google.firebase.auth.FirebaseAuth;
 
 public class HomeActivity extends AppCompatActivity {
 
@@ -24,6 +25,7 @@ public class HomeActivity extends AppCompatActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_home);
+        ensureAnonAuth();
 
         // If the layout has a TextView with id instructionText, we leave its text
         // as defined in XML (do NOT override it here).
@@ -59,6 +61,19 @@ public class HomeActivity extends AppCompatActivity {
                 }
                 startActivity(new Intent(this, HelloArActivity.class));
             });
+        }
+    }
+
+    private void ensureAnonAuth() {
+        FirebaseAuth auth = FirebaseAuth.getInstance();
+        if (auth.getCurrentUser() == null) {
+            auth.signInAnonymously()
+                    .addOnSuccessListener(r -> {
+                        // Optional: log uid for debugging
+                        // Log.d("Auth", "Anon uid=" + r.getUser().getUid());
+                    })
+                    .addOnFailureListener(e ->
+                            Toast.makeText(this, "Anonymous sign-in failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
         }
     }
 

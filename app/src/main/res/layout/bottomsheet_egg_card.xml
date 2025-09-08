@@ -47,6 +47,7 @@
 
         <!-- Title -->
         <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/titleLayout"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -54,7 +55,15 @@
             app:boxCornerRadiusTopStart="14dp"
             app:boxCornerRadiusTopEnd="14dp"
             app:boxCornerRadiusBottomStart="14dp"
-            app:boxCornerRadiusBottomEnd="14dp">
+            app:boxCornerRadiusBottomEnd="14dp"
+
+            app:endIconMode="custom"
+            app:endIconDrawable="@drawable/ic_mic_24"
+            app:endIconCheckable="false"
+            app:endIconContentDescription="@string/cd_dictate_title"
+
+            app:helperTextEnabled="true"
+            app:helperText="" >
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/titleInput"
@@ -68,6 +77,7 @@
 
         <!-- Description -->
         <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/descLayout"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -75,18 +85,28 @@
             app:boxCornerRadiusTopStart="14dp"
             app:boxCornerRadiusTopEnd="14dp"
             app:boxCornerRadiusBottomStart="14dp"
-            app:boxCornerRadiusBottomEnd="14dp">
+            app:boxCornerRadiusBottomEnd="14dp"
+
+            app:endIconMode="custom"
+            app:endIconDrawable="@drawable/ic_mic_24"
+            app:endIconCheckable="false"
+            app:endIconContentDescription="@string/cd_dictate_description"
+
+            app:helperTextEnabled="true"
+            app:helperText="" >
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/descInput"
                 android:layout_width="match_parent"
-                android:layout_height="120dp"
-                android:minHeight="56dp"
+                android:layout_height="wrap_content"
+                android:minLines="4"
+                android:maxLines="8"
                 android:hint="Description"
                 android:gravity="top|start"
-                android:inputType="textMultiLine"
+                android:inputType="textCapSentences|textMultiLine"
                 android:overScrollMode="always"
-                android:scrollbars="vertical" />
+                android:scrollbars="vertical"/>
+
         </com.google.android.material.textfield.TextInputLayout>
 
         <!-- Media Section -->
@@ -171,240 +191,240 @@
         </com.google.android.material.card.MaterialCardView>
 
         <!-- Audio + transcript card (only transcript field changed: now wrapped) -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:padding="12dp"
-            app:cardCornerRadius="9dp"
-            app:cardUseCompatPadding="true"
-            app:strokeWidth="0dp">
+<!--        <com.google.android.material.card.MaterialCardView-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="wrap_content"-->
+<!--            android:layout_marginTop="12dp"-->
+<!--            android:padding="12dp"-->
+<!--            app:cardCornerRadius="9dp"-->
+<!--            app:cardUseCompatPadding="true"-->
+<!--            app:strokeWidth="0dp">-->
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
+<!--            <LinearLayout-->
+<!--                android:layout_width="match_parent"-->
+<!--                android:layout_height="wrap_content"-->
+<!--                android:orientation="vertical">-->
 
-                <!-- header row (unchanged) -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+<!--                &lt;!&ndash; header row &ndash;&gt;-->
+<!--                <LinearLayout-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:gravity="center_vertical"-->
+<!--                    android:orientation="horizontal">-->
 
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Voice note (optional)"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+<!--                    <TextView-->
+<!--                        android:layout_width="0dp"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:layout_weight="1"-->
+<!--                        android:text="Voice note (optional)"-->
+<!--                        android:textSize="16sp"-->
+<!--                        android:textStyle="bold" />-->
 
-                    <com.google.android.material.chip.Chip
-                        android:id="@+id/recordingChip"
-                        style="@style/Widget.Material3.Chip.Assist"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Recording…"
-                        android:visibility="gone"
-                        app:chipIcon="@drawable/ic_mic_24"
-                        app:chipStartPadding="8dp"
-                        app:iconStartPadding="6dp" />
-                </LinearLayout>
+<!--                    <com.google.android.material.chip.Chip-->
+<!--                        android:id="@+id/recordingChip"-->
+<!--                        style="@style/Widget.Material3.Chip.Assist"-->
+<!--                        android:layout_width="wrap_content"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:text="Recording…"-->
+<!--                        android:visibility="gone"-->
+<!--                        app:chipIcon="@drawable/ic_mic_24"-->
+<!--                        app:chipStartPadding="8dp"-->
+<!--                        app:iconStartPadding="6dp" />-->
+<!--                </LinearLayout>-->
 
-                <TextView
-                    android:id="@+id/recordingTimer"
-                    android:layout_width="wrap_content"
-                    android:layout_height="wrap_content"
-                    android:paddingTop="6dp"
-                    android:text="00:00"
-                    android:textSize="18sp"
-                    android:textStyle="bold"
-                    android:visibility="gone" />
+<!--                <TextView-->
+<!--                    android:id="@+id/recordingTimer"-->
+<!--                    android:layout_width="wrap_content"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:paddingTop="6dp"-->
+<!--                    android:text="00:00"-->
+<!--                    android:textSize="18sp"-->
+<!--                    android:textStyle="bold"-->
+<!--                    android:visibility="gone" />-->
 
-                <!-- Transcript now wrapped in TextInputLayout to match other fields -->
-                <com.google.android.material.textfield.TextInputLayout
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    app:boxCornerRadiusTopStart="14dp"
-                    app:boxCornerRadiusTopEnd="14dp"
-                    app:boxCornerRadiusBottomStart="14dp"
-                    app:boxCornerRadiusBottomEnd="14dp">
+<!--                &lt;!&ndash; Transcript now wrapped in TextInputLayout to match other fields &ndash;&gt;-->
+<!--                <com.google.android.material.textfield.TextInputLayout-->
+<!--                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:layout_marginTop="8dp"-->
+<!--                    app:boxCornerRadiusTopStart="14dp"-->
+<!--                    app:boxCornerRadiusTopEnd="14dp"-->
+<!--                    app:boxCornerRadiusBottomStart="14dp"-->
+<!--                    app:boxCornerRadiusBottomEnd="14dp">-->
 
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/transcriptionInput"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minLines="3"
-                        android:maxLines="8"
-                        android:hint="Transcript"
-                        android:gravity="top|start"
-                        android:inputType="textCapSentences|textMultiLine"
-                        android:overScrollMode="always"
-                        android:scrollbars="vertical" />
-                </com.google.android.material.textfield.TextInputLayout>
+<!--                    <com.google.android.material.textfield.TextInputEditText-->
+<!--                        android:id="@+id/transcriptionInput"-->
+<!--                        android:layout_width="match_parent"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:minLines="3"-->
+<!--                        android:maxLines="8"-->
+<!--                        android:hint="Transcript"-->
+<!--                        android:gravity="top|start"-->
+<!--                        android:inputType="textCapSentences|textMultiLine"-->
+<!--                        android:overScrollMode="always"-->
+<!--                        android:scrollbars="vertical" />-->
+<!--                </com.google.android.material.textfield.TextInputLayout>-->
 
-                <!-- Controls row (unchanged) -->
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:gravity="center"
-                    android:orientation="horizontal">
+<!--                &lt;!&ndash; Controls &ndash;&gt;-->
+<!--                <LinearLayout-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:layout_marginTop="8dp"-->
+<!--                    android:gravity="center"-->
+<!--                    android:orientation="horizontal">-->
 
-                    <com.google.android.material.button.MaterialButton
-                        android:id="@+id/recordAudioBtn"
-                        style="@style/Widget.Material3.Button.TonalButton"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:clickable="true"
-                        android:focusable="true"
-                        android:text="Hold to Speak"
-                        app:backgroundTint="#DAAACEEB"
-                        app:icon="@drawable/ic_mic_24"
-                        app:iconPadding="8dp"
-                        app:iconSize="20dp" />
+<!--                    <com.google.android.material.button.MaterialButton-->
+<!--                        android:id="@+id/recordAudioBtn"-->
+<!--                        style="@style/Widget.Material3.Button.TonalButton"-->
+<!--                        android:layout_width="wrap_content"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:clickable="true"-->
+<!--                        android:focusable="true"-->
+<!--                        android:text="Hold to Speak"-->
+<!--                        app:backgroundTint="#DAAACEEB"-->
+<!--                        app:icon="@drawable/ic_mic_24"-->
+<!--                        app:iconPadding="8dp"-->
+<!--                        app:iconSize="20dp" />-->
 
-                    <Space
-                        android:layout_width="12dp"
-                        android:layout_height="1dp" />
+<!--                    <Space-->
+<!--                        android:layout_width="12dp"-->
+<!--                        android:layout_height="1dp" />-->
 
-                    <LinearLayout
-                        android:id="@+id/playbackGroup"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:gravity="center_vertical"
-                        android:orientation="horizontal"
-                        android:visibility="gone">
+<!--                    <LinearLayout-->
+<!--                        android:id="@+id/playbackGroup"-->
+<!--                        android:layout_width="wrap_content"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:gravity="center_vertical"-->
+<!--                        android:orientation="horizontal"-->
+<!--                        android:visibility="gone">-->
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/playPauseBtn"
-                            style="@style/Widget.Material3.Button.TonalButton"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Play"
-                            app:icon="@drawable/ic_play_arrow_24"
-                            app:iconPadding="8dp"
-                            app:iconSize="20dp" />
+<!--                        <com.google.android.material.button.MaterialButton-->
+<!--                            android:id="@+id/playPauseBtn"-->
+<!--                            style="@style/Widget.Material3.Button.TonalButton"-->
+<!--                            android:layout_width="wrap_content"-->
+<!--                            android:layout_height="wrap_content"-->
+<!--                            android:text="Play"-->
+<!--                            app:icon="@drawable/ic_play_arrow_24"-->
+<!--                            app:iconPadding="8dp"-->
+<!--                            app:iconSize="20dp" />-->
 
-                        <Space
-                            android:layout_width="8dp"
-                            android:layout_height="1dp" />
+<!--                        <Space-->
+<!--                            android:layout_width="8dp"-->
+<!--                            android:layout_height="1dp" />-->
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/reRecordBtn"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Record"
-                            app:icon="@drawable/ic_replay_24"
-                            app:iconPadding="8dp"
-                            app:iconSize="20dp" />
+<!--                        <com.google.android.material.button.MaterialButton-->
+<!--                            android:id="@+id/reRecordBtn"-->
+<!--                            style="@style/Widget.Material3.Button.OutlinedButton"-->
+<!--                            android:layout_width="wrap_content"-->
+<!--                            android:layout_height="wrap_content"-->
+<!--                            android:text="Record"-->
+<!--                            app:icon="@drawable/ic_replay_24"-->
+<!--                            app:iconPadding="8dp"-->
+<!--                            app:iconSize="20dp" />-->
 
-                        <Space
-                            android:layout_width="8dp"
-                            android:layout_height="1dp" />
+<!--                        <Space-->
+<!--                            android:layout_width="8dp"-->
+<!--                            android:layout_height="1dp" />-->
 
-                        <com.google.android.material.button.MaterialButton
-                            android:id="@+id/deleteAudioBtn"
-                            style="@style/Widget.Material3.Button.OutlinedButton"
-                            android:layout_width="wrap_content"
-                            android:layout_height="wrap_content"
-                            android:text="Delete"
-                            app:icon="@drawable/ic_delete_24"
-                            app:iconPadding="8dp"
-                            app:iconSize="20dp" />
-                    </LinearLayout>
-                </LinearLayout>
+<!--                        <com.google.android.material.button.MaterialButton-->
+<!--                            android:id="@+id/deleteAudioBtn"-->
+<!--                            style="@style/Widget.Material3.Button.OutlinedButton"-->
+<!--                            android:layout_width="wrap_content"-->
+<!--                            android:layout_height="wrap_content"-->
+<!--                            android:text="Delete"-->
+<!--                            app:icon="@drawable/ic_delete_24"-->
+<!--                            app:iconPadding="8dp"-->
+<!--                            app:iconSize="20dp" />-->
+<!--                    </LinearLayout>-->
+<!--                </LinearLayout>-->
 
-                <TextView
-                    android:id="@+id/audioHint"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:alpha="0.6"
-                    android:text="Hold to speak; release to stop. Use “Record” to capture a separate voice note." />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+<!--                <TextView-->
+<!--                    android:id="@+id/audioHint"-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:layout_marginTop="6dp"-->
+<!--                    android:alpha="0.6"-->
+<!--                    android:text="Hold to speak; release to stop. Use “Record” to capture a separate voice note." />-->
+<!--            </LinearLayout>-->
+<!--        </com.google.android.material.card.MaterialCardView>-->
 
-        <!-- NEW: Quiz preferences (optional) -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="12dp"
-            android:padding="12dp"
-            app:cardCornerRadius="9dp"
-            app:cardUseCompatPadding="true"
-            app:strokeWidth="0dp">
+<!--        &lt;!&ndash; NEW: Quiz preferences (optional) &ndash;&gt;-->
+<!--        <com.google.android.material.card.MaterialCardView-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="wrap_content"-->
+<!--            android:layout_marginTop="12dp"-->
+<!--            android:padding="12dp"-->
+<!--            app:cardCornerRadius="9dp"-->
+<!--            app:cardUseCompatPadding="true"-->
+<!--            app:strokeWidth="0dp">-->
 
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
+<!--            <LinearLayout-->
+<!--                android:layout_width="match_parent"-->
+<!--                android:layout_height="wrap_content"-->
+<!--                android:orientation="vertical">-->
 
-                <LinearLayout
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:gravity="center_vertical"
-                    android:orientation="horizontal">
+<!--                <LinearLayout-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:gravity="center_vertical"-->
+<!--                    android:orientation="horizontal">-->
 
-                    <TextView
-                        android:layout_width="0dp"
-                        android:layout_height="wrap_content"
-                        android:layout_weight="1"
-                        android:text="Quiz (optional)"
-                        android:textSize="16sp"
-                        android:textStyle="bold" />
+<!--                    <TextView-->
+<!--                        android:layout_width="0dp"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:layout_weight="1"-->
+<!--                        android:text="Quiz (optional)"-->
+<!--                        android:textSize="16sp"-->
+<!--                        android:textStyle="bold" />-->
 
-                    <com.google.android.material.switchmaterial.SwitchMaterial
-                        android:id="@+id/quizToggle"
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Create from transcript" />
-                </LinearLayout>
+<!--                    <com.google.android.material.switchmaterial.SwitchMaterial-->
+<!--                        android:id="@+id/quizToggle"-->
+<!--                        android:layout_width="wrap_content"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:text="Create from transcript" />-->
+<!--                </LinearLayout>-->
 
-                <LinearLayout
-                    android:id="@+id/quizCountRow"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:gravity="start|center_vertical"
-                    android:orientation="horizontal"
-                    android:visibility="gone">
+<!--                <LinearLayout-->
+<!--                    android:id="@+id/quizCountRow"-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:layout_marginTop="8dp"-->
+<!--                    android:gravity="start|center_vertical"-->
+<!--                    android:orientation="horizontal"-->
+<!--                    android:visibility="gone">-->
 
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:text="Questions:" />
+<!--                    <TextView-->
+<!--                        android:layout_width="wrap_content"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:text="Questions:" />-->
 
-                    <com.google.android.material.textfield.TextInputLayout
-                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                        android:layout_width="64dp"
-                        android:layout_height="wrap_content"
-                        android:layout_marginStart="8dp">
+<!--                    <com.google.android.material.textfield.TextInputLayout-->
+<!--                        style="@style/Widget.Material3.TextInputLayout.OutlinedBox"-->
+<!--                        android:layout_width="64dp"-->
+<!--                        android:layout_height="wrap_content"-->
+<!--                        android:layout_marginStart="8dp">-->
 
-                        <com.google.android.material.textfield.TextInputEditText
-                            android:id="@+id/quizCountInput"
-                            android:layout_width="match_parent"
-                            android:layout_height="wrap_content"
-                            android:inputType="number"
-                            android:text="3"
-                            android:maxLines="1" />
-                    </com.google.android.material.textfield.TextInputLayout>
-                </LinearLayout>
+<!--                        <com.google.android.material.textfield.TextInputEditText-->
+<!--                            android:id="@+id/quizCountInput"-->
+<!--                            android:layout_width="match_parent"-->
+<!--                            android:layout_height="wrap_content"-->
+<!--                            android:inputType="number"-->
+<!--                            android:text="3"-->
+<!--                            android:maxLines="1" />-->
+<!--                    </com.google.android.material.textfield.TextInputLayout>-->
+<!--                </LinearLayout>-->
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="6dp"
-                    android:alpha="0.6"
-                    android:text="If enabled, we’ll auto-generate a short multiple-choice quiz from your transcript." />
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
+<!--                <TextView-->
+<!--                    android:layout_width="match_parent"-->
+<!--                    android:layout_height="wrap_content"-->
+<!--                    android:layout_marginTop="6dp"-->
+<!--                    android:alpha="0.6"-->
+<!--                    android:text="If enabled, we’ll auto-generate a short multiple-choice quiz from your transcript." />-->
+<!--            </LinearLayout>-->
+<!--        </com.google.android.material.card.MaterialCardView>-->
 
-        <!-- Action buttons (unchanged) -->
+        <!-- Action buttons -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"

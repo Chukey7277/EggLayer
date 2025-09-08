@@ -89,6 +89,13 @@ import java.util.Map;
 import android.net.Uri;
 import android.view.Menu;
 
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.firestore.FirebaseFirestore;
+import com.google.firebase.firestore.FieldValue;
+import java.util.HashMap;
+import java.util.Map;
+
+
 
 /**
  * HelloAR “egg layer” with selectable Indoor/Outdoor authoring profiles.
@@ -222,6 +229,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        ensureAnonAuth();
 
         // Fine location for Geospatial API
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
@@ -953,15 +961,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 e.speechTranscript = (transcript == null) ? "" : transcript;
 
                 // Auto-generate quiz from transcript
-                List<EggEntry.QuizQuestion> quiz = QuizGenerator.generate(transcript, 3);
-                if (quiz != null && !quiz.isEmpty()) {
-                    e.quiz = quiz;
-                    Toast.makeText(HelloArActivity.this,
-                            "Added " + quiz.size() + " quiz question(s) from the transcript.",
-                            Toast.LENGTH_SHORT).show();
-                } else {
-                    e.quiz = null;
-                }
+                List<EggEntry.QuizQuestion> quiz = QuizGenerator.generate(description, 3);
+                if (quiz != null && !quiz.isEmpty()) { e.quiz = quiz; }
+
 
                 e.heading = headingNow;
 
@@ -981,9 +983,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 }
 
                 eggRepo.createDraft(e)
-                        .addOnSuccessListener(docRef ->
-                                eggRepo.uploadMediaAndPatch(docRef, photoUris, audioUri, e.speechTranscript))
+                        .addOnSuccessListener(docRef -> {
+                            eggRepo.uploadMediaAndPatch(docRef, photoUris, audioUri, e.speechTranscript);
+                            // Trigger AI quiz with the egg doc id so the Function can update it
+                            requestQuizForEgg(docRef.getId(), e.title, e.description);
+                        })
                         .addOnFailureListener(err -> Log.e(TAG, "Egg save failed", err));
+
             }
 
 
@@ -1040,6 +1046,29 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         depthSettingsMenuDialogCheckboxes[0] = depthSettings.useDepthForOcclusion();
         depthSettingsMenuDialogCheckboxes[1] = depthSettings.depthColorVisualizationEnabled();
         instantPlacementSettingsMenuDialogCheckboxes[0] = instantPlacementSettings.isInstantPlacementEnabled();
+    }
+
+    private void requestQuizForEgg(String eggDocId, String title, String description) {
+        Map<String, Object> req = new HashMap<>();
+        req.put("eggDocId", eggDocId);           // <-- important
+        req.put("title", title);
+        req.put("description", description);
+        req.put("model", "gemini-2.5-flash");
+        req.put("status", "pending");
+        req.put("createdAt", FieldValue.serverTimestamp());
+        FirebaseFirestore.getInstance().collection("quizRequests").add(req);
+    }
+    private void ensureAnonAuth() {
+        FirebaseAuth auth = FirebaseAuth.getInstance();
+        if (auth.getCurrentUser() == null) {
+            auth.signInAnonymously()
+                    .addOnSuccessListener(r -> {
+                        // Optional: log uid for debugging
+                        // Log.d("Auth", "Anon uid=" + r.getUser().getUid());
+                    })
+                    .addOnFailureListener(e ->
+                            Toast.makeText(this, "Anonymous sign-in failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
+        }
     }
 
     private void configureSession() {

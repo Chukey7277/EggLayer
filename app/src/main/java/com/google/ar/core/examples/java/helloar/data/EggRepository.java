@@ -170,8 +170,11 @@ public class EggRepository {
 
     /** Turn a Storage *path* (e.g. "/eggs/.../photo_0.jpg") into a downloadable URL. */
     public Task<Uri> downloadUrlFromPath(String storagePath) {
-        return storage.getStorage().getReference(storagePath).getDownloadUrl();
+        // Firestore/Storage paths you store often start with "/..."
+        String clean = storagePath.startsWith("/") ? storagePath.substring(1) : storagePath;
+        return storage.getStorage().getReference().child(clean).getDownloadUrl();
     }
+
 
     private static double distanceMeters(double lat1, double lon1, double lat2, double lon2) {
         double R = 6371000d;
