@@ -805,7 +805,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         final Pose camPoseNow = camera.getPose();
 
-        // Hit test and keep only nearby hits for precise plant placement
+        // Hit test and keep only nearby hits for precise  placement
         final float MAX_HIT_M = 2.0f;
         List<HitResult> raw = frame.hitTest(tap);
         List<HitResult> depths = new ArrayList<>();
@@ -839,7 +839,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         Collections.sort(planes, byDist);
         Collections.sort(geoms, byDist);
 
-        // For plant parts, prefer depth -> feature points -> plane
+        // For  prefer depth -> feature points -> plane
         HitResult chosen = !depths.isEmpty() ? depths.get(0)
                 : !points.isEmpty() ? points.get(0)
                 : !planes.isEmpty() ? planes.get(0)
@@ -847,7 +847,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 : null;
 
         if (chosen == null) {
-            messageSnackbarHelper.showMessage(this, "Looking for plant surface… move a bit closer with steady hands.");
+            messageSnackbarHelper.showMessage(this, "Looking for  surface… move a bit closer with steady hands.");
             return;
         }
 
