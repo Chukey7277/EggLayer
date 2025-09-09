@@ -14,20 +14,19 @@ import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
-import android.view.View; // for setVisibility(...)
+import android.view.View;
 import android.widget.ImageButton;
-import androidx.appcompat.widget.PopupMenu;
-
-
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.Nullable;
 import androidx.appcompat.app.AlertDialog;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.PopupMenu;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import android.net.Uri;
 
 import com.google.ar.core.Anchor;
 import com.google.ar.core.ArCoreApk;
@@ -47,6 +46,7 @@ import com.google.ar.core.Session;
 import com.google.ar.core.StreetscapeGeometry;
 import com.google.ar.core.Trackable;
 import com.google.ar.core.TrackingState;
+
 import com.google.ar.core.examples.java.common.helpers.CameraPermissionHelper;
 import com.google.ar.core.examples.java.common.helpers.DepthSettings;
 import com.google.ar.core.examples.java.common.helpers.DisplayRotationHelper;
@@ -65,14 +65,18 @@ import com.google.ar.core.examples.java.common.samplerender.arcore.PlaneRenderer
 import com.google.ar.core.examples.java.common.samplerender.arcore.SpecularCubemapFilter;
 import com.google.ar.core.examples.java.helloar.data.EggEntry;
 import com.google.ar.core.examples.java.helloar.data.EggRepository;
-import com.google.ar.core.examples.java.helloar.data.QuizGenerator;
 import com.google.ar.core.examples.java.helloar.ui.EggCardSheet;
+
 import com.google.ar.core.exceptions.CameraNotAvailableException;
 import com.google.ar.core.exceptions.UnavailableApkTooOldException;
 import com.google.ar.core.exceptions.UnavailableArcoreNotInstalledException;
 import com.google.ar.core.exceptions.UnavailableDeviceNotCompatibleException;
 import com.google.ar.core.exceptions.UnavailableSdkTooOldException;
 import com.google.ar.core.exceptions.UnavailableUserDeclinedInstallationException;
+
+import com.google.firebase.auth.FirebaseAuth;
+import com.google.firebase.firestore.FieldValue;
+import com.google.firebase.firestore.FirebaseFirestore;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -81,29 +85,18 @@ import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 
-import android.net.Uri;
-import android.view.Menu;
-
-import com.google.firebase.auth.FirebaseAuth;
-import com.google.firebase.firestore.FirebaseFirestore;
-import com.google.firebase.firestore.FieldValue;
 import java.util.HashMap;
 import java.util.Map;
 
-
-
 /**
- * HelloAR “egg layer” with selectable Indoor/Outdoor authoring profiles.
- * - Instant Placement OFF (no approximate depth).
- * - Accept only real hits (Plane/Depth/Good Point; priority changes by mode).
- * - Save only when Earth is tracking and accuracy passes per-mode gates (OUTDOOR strict; INDOOR lenient).
- * - Depth ON; visualization OFF.
- * - Heading saved only if camera heading is accurate (per-mode gate).
+ * HelloAR egg layer:
+ * - INDOOR: precise placement via Depth/Feature hits + Cloud Anchor hosting (persistence).
+ * - OUTDOOR: Geospatial gating (no hosting).
+ * - Instant Placement OFF; Depth occlusion ON if supported.
+ * - One authoring anchor at a time.
  */
 public class HelloArActivity extends AppCompatActivity implements SampleRender.Renderer {
 
@@ -128,12 +121,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final double V_ACC_OUTDOOR = 20.0;    // meters
     private static final double HEAD_ACC_OUTDOOR = 25.0; // degrees
 
-    // INDOOR: looser (GNSS weak; rely on planes/depth for placement)
+    // INDOOR: looser gates
     private static final double H_ACC_INDOOR = 80.0;     // meters
     private static final double V_ACC_INDOOR = 60.0;     // meters
     private static final double HEAD_ACC_INDOOR = 60.0;  // degrees
 
-    // Rendering
+    // Cloud Anchor TTL (days)
+    private static final int CLOUD_TTL_DAYS = 1;
+
+    // Rendering & ARCore
     private GLSurfaceView surfaceView;
     private boolean installRequested;
     private Session session;
@@ -159,7 +155,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private VertexBuffer pointCloudVertexBuffer;
     private Mesh pointCloudMesh;
     private Shader pointCloudShader;
-    @SuppressWarnings("FieldCanBeLocal")
     private long lastPointCloudTimestamp = 0;
 
     // Egg model (PBR with unlit fallback)
@@ -188,8 +183,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private TextView poseInfoCard;
     private TextView tvLatLng, tvLatLngAcc, tvAlt, tvAltAcc, tvHeading, tvHeadingAcc, tvAnchorState, tvEarthState;
 
-    // Anchors (keep only one for creator flow)
+    // Authoring anchor (single)
     private final List<WrappedAnchor> wrappedAnchors = new ArrayList<>();
+    @Nullable private Anchor currentPlacedAnchor = null;
 
     // Geospatial caching
     @Nullable private GeospatialPose lastGoodGeoPose = null;
@@ -205,33 +201,32 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final int MENU_ENV_HEADER = 2001;
     private static final int MENU_ENV_INDOOR = 2002;
     private static final int MENU_ENV_OUTDOOR = 2003;
+    private static final int MENU_DIVIDER    = 2004;
 
-//    private static final int REQ_FINE_LOCATION = 101;
-//    private static final int GROUP_ENV = 0x2001;
-//    private static final int MENU_ENV_HEADER = 0x3001;
-//    private static final int MENU_ENV_INDOOR = 0x3002;
-//    private static final int MENU_ENV_OUTDOOR = 0x3003;
-    private static final int MENU_DIVIDER = 0x3004;
-
+    // ---- Cloud Anchor hosting state (INDOOR only) ----
+    private Anchor localAnchorForHosting;   // anchor to host
+    private Anchor hostedCloudAnchor;       // anchor returned while hosting
+    private String hostedCloudId;           // final cloud anchor id
+    private String pendingEggDocId;         // Firestore doc to patch when hosting succeeds
+    private enum HostState { IDLE, HOSTING, SUCCESS, ERROR }
+    private HostState hostState = HostState.IDLE;
 
     private static float distance(Pose a, Pose b) {
         float dx = a.tx() - b.tx(), dy = a.ty() - b.ty(), dz = a.tz() - b.tz();
         return (float) Math.sqrt(dx*dx + dy*dy + dz*dz);
     }
 
-    @Nullable private Anchor currentPlacedAnchor = null;
-
     // Convenience gates per mode
-    private double hGate() { return envMode == Env.INDOOR ? H_ACC_INDOOR : H_ACC_OUTDOOR; }
-    private double vGate() { return envMode == Env.INDOOR ? V_ACC_INDOOR : V_ACC_OUTDOOR; }
-    private double headGate() { return envMode == Env.INDOOR ? HEAD_ACC_INDOOR : HEAD_ACC_OUTDOOR; }
+    private double hGate()  { return envMode == Env.INDOOR ? H_ACC_INDOOR  : H_ACC_OUTDOOR; }
+    private double vGate()  { return envMode == Env.INDOOR ? V_ACC_INDOOR  : V_ACC_OUTDOOR; }
+    private double headGate(){ return envMode == Env.INDOOR ? HEAD_ACC_INDOOR : HEAD_ACC_OUTDOOR; }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         ensureAnonAuth();
 
-        // Fine location for Geospatial API
+        // Fine location for Geospatial API (used mainly outdoors)
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
                 != PackageManager.PERMISSION_GRANTED) {
             ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_FINE_LOCATION);
@@ -279,35 +274,24 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             PopupMenu popup = new PopupMenu(HelloArActivity.this, v);
             popup.setOnMenuItemClickListener(HelloArActivity.this::settingsMenuClick);
 
-            // Clear, human-friendly environment controls (added before inflating the XML menu)
             Menu menu = popup.getMenu();
-
-            // Header (disabled)
             menu.add(Menu.NONE, MENU_ENV_HEADER, Menu.CATEGORY_SYSTEM, "Environment mode — choose one:")
                     .setEnabled(false);
-
-            // Exclusive checkable options
-            menu.add(GROUP_ENV, MENU_ENV_INDOOR,  Menu.CATEGORY_SYSTEM + 1, "Indoor (inside buildings)");
-            menu.add(GROUP_ENV, MENU_ENV_OUTDOOR, Menu.CATEGORY_SYSTEM + 2, "Outdoor (streets & open areas)");
+            menu.add(GROUP_ENV, MENU_ENV_INDOOR,  Menu.CATEGORY_SYSTEM + 1, "Indoor (plants/classroom)")
+                    .setCheckable(true);
+            menu.add(GROUP_ENV, MENU_ENV_OUTDOOR, Menu.CATEGORY_SYSTEM + 2, "Outdoor (streets/open)")
+                    .setCheckable(true);
             menu.setGroupCheckable(GROUP_ENV, true, true);
-            if (envMode == Env.INDOOR) {
-                menu.findItem(MENU_ENV_INDOOR).setChecked(true);
-            } else {
-                menu.findItem(MENU_ENV_OUTDOOR).setChecked(true);
-            }
-
-            // Divider (disabled)
+            if (envMode == Env.INDOOR) menu.findItem(MENU_ENV_INDOOR).setChecked(true);
+            else                       menu.findItem(MENU_ENV_OUTDOOR).setChecked(true);
             menu.add(Menu.NONE, MENU_DIVIDER, Menu.CATEGORY_SYSTEM + 3, "────────────").setEnabled(false);
 
-            // The rest of the standard settings from XML
             popup.inflate(R.menu.settings_menu);
-
             popup.show();
         });
 
         eggRepo = new EggRepository();
     }
-
 
     private boolean settingsMenuClick(MenuItem item) {
         final int id = item.getItemId();
@@ -336,13 +320,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
         envMode = newMode;
         prefs.edit().putString(KEY_ENV, envMode.name()).apply();
-        if (session != null) {
-            configureSession();
-        }
-        // Clear, readable confirmation
+        if (session != null) configureSession();
+
         String msg = (envMode == Env.INDOOR)
-                ? "Environment mode set to INDOOR.\nSaving requires:\n• horizontal accuracy ≤ 80 m\n• vertical accuracy ≤ 60 m\n• heading accuracy ≤ 60°"
-                : "Environment mode set to OUTDOOR.\nSaving requires:\n• horizontal accuracy ≤ 30 m\n• vertical accuracy ≤ 20 m\n• heading accuracy ≤ 25°";
+                ? "Environment set to INDOOR.\nPlacement uses Depth/feature points.\nAnchor is hosted to Cloud for persistence."
+                : "Environment set to OUTDOOR.\nPlacement gated by Geospatial accuracy.";
         Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
     }
 
@@ -385,10 +367,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 }
 
                 session = new Session(this);
-
-                Config config = session.getConfig();
-                config.setGeospatialMode(Config.GeospatialMode.ENABLED);
-                session.configure(config);
+                configureSession(); // initial
+                session.resume();
+                sessionPaused = false;
 
             } catch (UnavailableArcoreNotInstalledException | UnavailableUserDeclinedInstallationException e) {
                 message = "Please install ARCore";
@@ -412,16 +393,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 Log.e(TAG, "Exception creating session", exception);
                 return;
             }
-        }
-
-        try {
-            configureSession();
-            session.resume();
-            sessionPaused = false;
-        } catch (CameraNotAvailableException e) {
-            messageSnackbarHelper.showError(this, "Camera not available. Try restarting the app.");
-            session = null;
-            return;
+        } else {
+            try {
+                configureSession();
+                session.resume();
+                sessionPaused = false;
+            } catch (CameraNotAvailableException e) {
+                messageSnackbarHelper.showError(this, "Camera not available. Try restarting the app.");
+                session = null;
+                return;
+            }
         }
 
         surfaceView.onResume();
@@ -455,11 +436,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     @Override public void onSurfaceCreated(SampleRender render) {
         try {
-            if (!verifyShaderAssetsExist()) {
-                backgroundReady = false;
-                Log.e(TAG, "Shader assets missing — running with unlit fallback if possible.");
-            }
-
             backgroundRenderer = new BackgroundRenderer(render);
             try { backgroundRenderer.setUseDepthVisualization(render, false); } catch (Throwable ignored) {}
             try {
@@ -491,7 +467,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 GLES30.glTexImage2D(GLES30.GL_TEXTURE_2D, 0, GLES30.GL_RG16F, 64, 64, 0,
                         GLES30.GL_RG, GLES30.GL_HALF_FLOAT, buf);
             } catch (IOException io) {
-                Log.w(TAG, "DFG LUT missing; PBR lighting may look off. Will try unlit fallback if needed.", io);
+                Log.w(TAG, "Missing DFG LUT (PBR may look off).", io);
             }
 
             try {
@@ -526,7 +502,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 eggShaders = new Shader[]{ virtualObjectShader };
                 pbrReady = true;
             } catch (IOException e) {
-                Log.e(TAG, "PBR egg assets missing — will fall back to unlit.", e);
+                Log.e(TAG, "PBR assets missing — will fall back to unlit.", e);
             } catch (Throwable t) {
                 Log.w(TAG, "PBR pipeline init failed — will fall back to unlit.", t);
             }
@@ -549,7 +525,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     eggMeshes  = new Mesh[]  { virtualObjectMesh };
                     eggShaders = new Shader[]{ unlitShader };
                 } catch (IOException io) {
-                    Log.e(TAG, "Unlit fallback also failed to load. No renderable egg.", io);
+                    Log.e(TAG, "Unlit fallback also failed. No renderable egg.", io);
                     eggMeshes = null; eggShaders = null;
                 }
             }
@@ -563,36 +539,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         } catch (Throwable t) {
             Log.e(TAG, "onSurfaceCreated: fatal init error", t);
         }
-    }
-
-    private boolean verifyShaderAssetsExist() {
-        String[] required = new String[]{
-                "shaders/background_show_camera.vert",
-                "shaders/background_show_camera.frag",
-                "shaders/background_show_depth_color_visualization.vert",
-                "shaders/background_show_depth_color_visualization.frag",
-                "shaders/occlusion.vert",
-                "shaders/occlusion.frag",
-                "shaders/environmental_hdr.vert",
-                "shaders/environmental_hdr.frag",
-                "shaders/ar_unlit_object.vert",
-                "shaders/ar_unlit_object.frag",
-                "shaders/plane.vert",
-                "shaders/plane.frag",
-                "shaders/point_cloud.vert",
-                "shaders/point_cloud.frag"
-        };
-
-        boolean ok = true;
-        for (String path : required) {
-            try (InputStream is = getAssets().open(path)) {
-                Log.i(TAG, "✅ Found asset: " + path);
-            } catch (Exception e) {
-                ok = false;
-                Log.e(TAG, "❌ Missing asset: " + path, e);
-            }
-        }
-        return ok;
     }
 
     @Override public void onSurfaceChanged(SampleRender render, int width, int height) {
@@ -665,7 +611,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         } catch (Throwable t) { Log.w(TAG, "Plane rendering failed", t); }
 
-        // Point cloud (helps user see when environment is understood)
+        // Point cloud
         try (com.google.ar.core.PointCloud pc = frame.acquirePointCloud()) {
             if (pointCloudShader != null && pointCloudMesh != null && pointCloudVertexBuffer != null) {
                 if (pc.getTimestamp() > lastPointCloudTimestamp) {
@@ -678,7 +624,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         } catch (Throwable t) { Log.w(TAG, "Point cloud draw failed", t); }
 
-        // Virtual content
+        // Prepare to draw eggs
         try {
             GLES30.glEnable(GLES30.GL_DEPTH_TEST);
             GLES30.glDepthFunc(GLES30.GL_LEQUAL);
@@ -730,7 +676,31 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             backgroundRenderer.drawVirtualScene(render, virtualSceneFramebuffer, Z_NEAR, Z_FAR);
         }
 
-        // HUD based on CAMERA geopose (for live readout & heading cache)
+        // --- Cloud Anchor hosting progress (INDOOR only) ---
+        if (envMode == Env.INDOOR && hostState == HostState.HOSTING && hostedCloudAnchor != null) {
+            Anchor.CloudAnchorState st = hostedCloudAnchor.getCloudAnchorState();
+            if (st.isError()) {
+                hostState = HostState.ERROR;
+                runOnUiThread(() ->
+                        Toast.makeText(this, "Cloud Anchor hosting failed: " + st, Toast.LENGTH_LONG).show());
+            } else if (st == Anchor.CloudAnchorState.SUCCESS) {
+                hostState = HostState.SUCCESS;
+                hostedCloudId = hostedCloudAnchor.getCloudAnchorId();
+                if (pendingEggDocId != null && hostedCloudId != null) {
+                    FirebaseFirestore.getInstance()
+                            .collection("eggs")
+                            .document(pendingEggDocId)
+                            .update("anchorType", "CLOUD",
+                                    "cloudId", hostedCloudId)
+                            .addOnSuccessListener(v ->
+                                    runOnUiThread(() ->
+                                            Toast.makeText(this, "Anchor hosted ✔", Toast.LENGTH_SHORT).show()))
+                            .addOnFailureListener(e -> Log.e(TAG, "Failed to write cloudId", e));
+                }
+            }
+        }
+
+        // HUD based on CAMERA geopose
         try {
             Earth earth = null;
             try { earth = session.getEarth(); } catch (Throwable ignore) {}
@@ -744,11 +714,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
 
             String latLngLine = "LAT/LNG: —";
-            String latLngAcc  = "ACCURACY: —";
+            String latLngAcc  = "H-Accuracy: —";
             String altLine    = "ALTITUDE: —";
-            String altAcc     = "ACCURACY: —";
+            String altAcc     = "V-Accuracy: —";
             String headLine   = "HEADING: —";
-            String headAcc    = "ACCURACY: —";
+            String headAcc    = "Heading accuracy: —";
             String anchorLine = "Anchor: none";
 
             Anchor currentAnchor = (!wrappedAnchors.isEmpty() && wrappedAnchors.get(0) != null) ? wrappedAnchors.get(0).getAnchor() : null;
@@ -795,7 +765,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         } catch (Throwable ignore) {}
     }
 
-    // Handle only one tap per frame — accept ONLY real hits; priority depends on env
+    // Handle only one tap per frame — accept ONLY real hits (Depth/Point/Plane)
     private void handleTap(Frame frame, Camera camera) {
         MotionEvent tap = tapHelper.poll();
         if (tap == null) return;
@@ -803,6 +773,25 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         if (camera.getTrackingState() != TrackingState.TRACKING) {
             messageSnackbarHelper.showMessage(this, "Move slowly and point at well-lit, textured surfaces.");
             return;
+        }
+
+        // Only gate on geospatial accuracy outdoors
+        if (envMode == Env.OUTDOOR) {
+            Earth earth = session.getEarth();
+            if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
+                try {
+                    GeospatialPose camGp = earth.getCameraGeospatialPose();
+                    if (camGp != null) {
+                        double h = camGp.getHorizontalAccuracy();
+                        double v = camGp.getVerticalAccuracy();
+                        if ((!Double.isNaN(h) && h > hGate()) || (!Double.isNaN(v) && v > vGate())) {
+                            messageSnackbarHelper.showMessage(this,
+                                    "Waiting for better location accuracy… move around and try again.");
+                            return;
+                        }
+                    }
+                } catch (Throwable ignore) {}
+            }
         }
 
         // Keep just one authoring anchor
@@ -814,73 +803,71 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             wrappedAnchors.clear();
         }
 
-        final Pose camPose = camera.getPose();
-        List<HitResult> raw = frame.hitTest(tap);
+        final Pose camPoseNow = camera.getPose();
 
-        List<HitResult> planes = new ArrayList<>();
+        // Hit test and keep only nearby hits for precise plant placement
+        final float MAX_HIT_M = 2.0f;
+        List<HitResult> raw = frame.hitTest(tap);
         List<HitResult> depths = new ArrayList<>();
         List<HitResult> points = new ArrayList<>();
+        List<HitResult> planes = new ArrayList<>();
         List<HitResult> geoms  = new ArrayList<>();
 
         for (HitResult hit : raw) {
             Trackable t = hit.getTrackable();
-            boolean isPlane = (t instanceof Plane)
-                    && ((Plane) t).isPoseInPolygon(hit.getHitPose())
-                    && PlaneRenderer.calculateDistanceToPlane(hit.getHitPose(), camPose) > 0;
+            float d = distance(hit.getHitPose(), camPoseNow);
+            if (d > MAX_HIT_M) continue;
+
             boolean isDepth = (t instanceof DepthPoint);
             boolean isGoodPoint = (t instanceof Point)
                     && ((Point) t).getOrientationMode() == OrientationMode.ESTIMATED_SURFACE_NORMAL;
-            boolean isGeom  = (t instanceof StreetscapeGeometry);
+            boolean isPlane = (t instanceof Plane)
+                    && ((Plane) t).isPoseInPolygon(hit.getHitPose())
+                    && PlaneRenderer.calculateDistanceToPlane(hit.getHitPose(), camPoseNow) > 0;
+            boolean isGeom = (t instanceof StreetscapeGeometry);
 
-            if (isPlane) planes.add(hit);
-            else if (isDepth) depths.add(hit);
+            if (isDepth) depths.add(hit);
             else if (isGoodPoint) points.add(hit);
+            else if (isPlane) planes.add(hit);
             else if (isGeom) geoms.add(hit);
         }
 
         Comparator<HitResult> byDist = (a, b) ->
-                Float.compare(distance(a.getHitPose(), camPose), distance(b.getHitPose(), camPose));
-        Collections.sort(planes, byDist);
+                Float.compare(distance(a.getHitPose(), camPoseNow), distance(b.getHitPose(), camPoseNow));
         Collections.sort(depths, byDist);
         Collections.sort(points, byDist);
+        Collections.sort(planes, byDist);
         Collections.sort(geoms, byDist);
 
-        // Priority by mode
-        HitResult chosen;
-        if (envMode == Env.INDOOR) {
-            chosen = !planes.isEmpty() ? planes.get(0)
-                    : !depths.isEmpty() ? depths.get(0)
-                    : !points.isEmpty() ? points.get(0)
-                    : !geoms.isEmpty() ? geoms.get(0)
-                    : null;
-        } else {
-            chosen = !depths.isEmpty() ? depths.get(0)
-                    : !planes.isEmpty() ? planes.get(0)
-                    : !points.isEmpty() ? points.get(0)
-                    : !geoms.isEmpty() ? geoms.get(0)
-                    : null;
-        }
+        // For plant parts, prefer depth -> feature points -> plane
+        HitResult chosen = !depths.isEmpty() ? depths.get(0)
+                : !points.isEmpty() ? points.get(0)
+                : !planes.isEmpty() ? planes.get(0)
+                : !geoms.isEmpty() ? geoms.get(0)
+                : null;
 
         if (chosen == null) {
-            messageSnackbarHelper.showMessage(this, "Looking for a surface… hold steady or move closer.");
+            messageSnackbarHelper.showMessage(this, "Looking for plant surface… move a bit closer with steady hands.");
             return;
         }
 
-        Anchor placedAnchor = chosen.createAnchor();
+        final Anchor placedAnchor = chosen.createAnchor();
         currentPlacedAnchor = placedAnchor;
         wrappedAnchors.add(new WrappedAnchor(placedAnchor, chosen.getTrackable()));
 
-        // Try to get the ANCHOR geopose if Earth is ready — but do NOT block the sheet if it isn't.
+        // Remember for indoor hosting later
+        localAnchorForHosting = placedAnchor;
+        hostState = HostState.IDLE;
+
+        // Optional: geospatial snapshot for HUD & doc
+        GeospatialPose anchorGp = null, camGp = null;
         Earth earth = null;
-        GeospatialPose anchorGp = null;
-        GeospatialPose camGp = null;
         try { earth = session.getEarth(); } catch (Throwable ignore) {}
         if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
             try { anchorGp = earth.getGeospatialPose(placedAnchor.getPose()); } catch (Throwable ignore) {}
             try { camGp    = earth.getCameraGeospatialPose(); } catch (Throwable ignore) {}
         }
 
-        // For HUD (optional)
         final String msg = (anchorGp != null)
                 ? String.format(Locale.US, "Placed. Lat %.6f  Lng %.6f  Alt %.2f  (H ±%.1fm, V ±%.1fm)",
                 anchorGp.getLatitude(), anchorGp.getLongitude(), anchorGp.getAltitude(),
@@ -893,12 +880,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         });
 
-        // Build the initial snapshot (may be null or low-accuracy). The sheet will open immediately.
-        EggCardSheet.GeoPoseSnapshot snap = null;
+        // Open the save sheet
+        EggCardSheet sheet = new EggCardSheet();
         if (anchorGp != null) {
             double headingDeg = (camGp != null && !Double.isNaN(camGp.getHeading()) && camGp.getHeadingAccuracy() <= headGate())
                     ? camGp.getHeading() : Double.NaN;
-            snap = new EggCardSheet.GeoPoseSnapshot(
+            sheet.setGeoPoseSnapshot(new EggCardSheet.GeoPoseSnapshot(
                     anchorGp.getLatitude(),
                     anchorGp.getLongitude(),
                     anchorGp.getAltitude(),
@@ -906,43 +893,33 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     anchorGp.getHorizontalAccuracy(),
                     anchorGp.getVerticalAccuracy(),
                     (camGp != null ? camGp.getHeadingAccuracy() : Double.NaN),
-                    System.currentTimeMillis());
+                    System.currentTimeMillis()));
         }
-
-        // Open the save sheet NOW (don’t gate on accuracy here).
-        EggCardSheet sheet = new EggCardSheet();
-        sheet.setGeoPoseSnapshot(snap);
         sheet.setListener(new EggCardSheet.Listener() {
             @Override
-            public void onSave(String title,
-                               String description,
-                               String transcript,
-                               List<Uri> photoUris,
-                               @Nullable Uri audioUri,
+            public void onSave(String title, String description, String transcript,
+                               List<Uri> photoUris, @Nullable Uri audioUri,
                                @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
 
-                Earth earthNow = null;
+                // Outdoor: ensure accuracy before saving metadata
                 GeospatialPose finalGp = null;
-                try { earthNow = session.getEarth(); } catch (Throwable ignore) {}
-                if (earthNow != null && earthNow.getTrackingState() == TrackingState.TRACKING && currentPlacedAnchor != null) {
-                    try { finalGp = earthNow.getGeospatialPose(currentPlacedAnchor.getPose()); } catch (Throwable ignore) {}
-                }
+                Earth earthNow = null;
+                try {
+                    earthNow = session.getEarth();
+                    if (earthNow != null && earthNow.getTrackingState() == TrackingState.TRACKING && currentPlacedAnchor != null) {
+                        finalGp = earthNow.getGeospatialPose(currentPlacedAnchor.getPose());
+                    }
+                } catch (Throwable ignore) {}
 
-                // OUTDOOR blocks on accuracy; INDOOR is permissive.
                 if (envMode == Env.OUTDOOR) {
                     double hAcc = (finalGp != null) ? finalGp.getHorizontalAccuracy() : Double.POSITIVE_INFINITY;
                     double vAcc = (finalGp != null) ? finalGp.getVerticalAccuracy() : Double.POSITIVE_INFINITY;
                     if (Double.isNaN(vAcc)) vAcc = Double.POSITIVE_INFINITY;
-
                     if (finalGp == null || hAcc > hGate() || vAcc > vGate()) {
                         String why = (finalGp == null)
                                 ? "Location not precise enough yet for Outdoor mode."
-                                : String.format(Locale.US,
-                                "Location not precise enough for Outdoor mode.\nCurrent: horizontal ±%.1f m, vertical ±%.1f m.",
-                                hAcc, vAcc);
-                        Toast.makeText(HelloArActivity.this,
-                                why + "\nHold still, scan around, then tap Save again.",
-                                Toast.LENGTH_LONG).show();
+                                : String.format(Locale.US, "Location not precise enough for Outdoor mode.\nCurrent: H ±%.1fm, V ±%.1fm.", hAcc, vAcc);
+                        Toast.makeText(HelloArActivity.this, why + "\nScan a bit more and try Save again.", Toast.LENGTH_LONG).show();
                         return;
                     }
                 }
@@ -960,10 +937,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 e.description = (description == null) ? "" : description;
                 e.speechTranscript = (transcript == null) ? "" : transcript;
 
-                // Auto-generate quiz from transcript
-                List<EggEntry.QuizQuestion> quiz = QuizGenerator.generate(description, 3);
-                if (quiz != null && !quiz.isEmpty()) { e.quiz = quiz; }
-
+                // Quiz generation paused:
+                e.quiz = null;
 
                 e.heading = headingNow;
 
@@ -971,33 +946,54 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     e.geo      = new com.google.firebase.firestore.GeoPoint(finalGp.getLatitude(), finalGp.getLongitude());
                     e.alt      = finalGp.getAltitude();
                     e.horizAcc = finalGp.getHorizontalAccuracy();
-                    // Avoid writing NaN to Firestore:
                     double vAcc = finalGp.getVerticalAccuracy();
                     e.vertAcc  = Double.isNaN(vAcc) ? null : vAcc;
-                } else {
-                    // Indoor w/o reliable geopose → leave geospatial fields null
-                    e.geo      = null;
-                    e.alt      = null;
-                    e.horizAcc = null;
-                    e.vertAcc  = null;
                 }
+
+                // Simple placement metadata
+                e.placementType = (currentPlacedAnchor != null && !wrappedAnchors.isEmpty())
+                        ? wrappedAnchors.get(0).getTrackable().getClass().getSimpleName() : "Unknown";
+                e.distanceFromCamera = (currentPlacedAnchor != null) ? distance(currentPlacedAnchor.getPose(), camera.getPose()) : 0f;
 
                 eggRepo.createDraft(e)
                         .addOnSuccessListener(docRef -> {
                             eggRepo.uploadMediaAndPatch(docRef, photoUris, audioUri, e.speechTranscript);
-                            // Trigger AI quiz with the egg doc id so the Function can update it
-                            requestQuizForEgg(docRef.getId(), e.title, e.description);
+                            // Start hosting this placement so you can re-find it later indoors
+                            startHostingCloudAnchor(currentPlacedAnchor, docRef.getId());
                         })
                         .addOnFailureListener(err -> Log.e(TAG, "Egg save failed", err));
 
             }
 
-
             @Override public void onCancel() {}
         });
+
         if (!isFinishing() && !isDestroyed()) sheet.show(getSupportFragmentManager(), "EggCardSheet");
     }
 
+    private void startHostingCloudAnchor(Anchor local, @Nullable String eggDocIdToPatch) {
+        if (local == null || session == null) return;
+
+        pendingEggDocId = eggDocIdToPatch;
+        hostState = HostState.HOSTING;
+
+        try {
+            try {
+                // Prefer the 2-arg API with TTL in days
+                hostedCloudAnchor = session.hostCloudAnchor(local);
+            } catch (NoSuchMethodError e) {
+                // fallback: 1-arg API, if available
+                hostedCloudAnchor = session.hostCloudAnchor(local);
+            }
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Hosting anchor… (24h)", Toast.LENGTH_SHORT).show());
+        } catch (Throwable t) {
+            hostState = HostState.ERROR;
+            Log.e(TAG, "Failed to start hosting", t);
+            runOnUiThread(() ->
+                    Toast.makeText(this, "Failed to start hosting: " + t.getMessage(), Toast.LENGTH_LONG).show());
+        }
+    }
     private void launchInstantPlacementSettingsMenuDialog() {
         resetSettingsMenuDialogCheckboxes();
         Resources resources = getResources();
@@ -1016,7 +1012,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void launchDepthSettingsMenuDialog() {
         resetSettingsMenuDialogCheckboxes();
         Resources resources = getResources();
-        if (session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
+        if (session != null && session.isDepthModeSupported(Config.DepthMode.AUTOMATIC)) {
             new AlertDialog.Builder(this)
                     .setTitle(R.string.options_title_with_depth)
                     .setMultiChoiceItems(
@@ -1050,7 +1046,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private void requestQuizForEgg(String eggDocId, String title, String description) {
         Map<String, Object> req = new HashMap<>();
-        req.put("eggDocId", eggDocId);           // <-- important
+        req.put("eggDocId", eggDocId);
         req.put("title", title);
         req.put("description", description);
         req.put("model", "gemini-2.5-flash");
@@ -1058,26 +1054,28 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         req.put("createdAt", FieldValue.serverTimestamp());
         FirebaseFirestore.getInstance().collection("quizRequests").add(req);
     }
+
     private void ensureAnonAuth() {
         FirebaseAuth auth = FirebaseAuth.getInstance();
         if (auth.getCurrentUser() == null) {
             auth.signInAnonymously()
-                    .addOnSuccessListener(r -> {
-                        // Optional: log uid for debugging
-                        // Log.d("Auth", "Anon uid=" + r.getUser().getUid());
-                    })
+                    .addOnSuccessListener(r -> { /* ok */ })
                     .addOnFailureListener(e ->
                             Toast.makeText(this, "Anonymous sign-in failed: " + e.getMessage(), Toast.LENGTH_LONG).show());
         }
     }
 
     private void configureSession() {
+        if (session == null) return;
         Config config = session.getConfig();
         config.setLightEstimationMode(Config.LightEstimationMode.ENVIRONMENTAL_HDR);
         config.setGeospatialMode(Config.GeospatialMode.ENABLED);
         config.setStreetscapeGeometryMode(Config.StreetscapeGeometryMode.DISABLED);
 
-        // Keep Instant Placement off by default (authoring requires real depth/planes).
+        // Cloud Anchors enabled (we host indoors)
+        config.setCloudAnchorMode(Config.CloudAnchorMode.ENABLED);
+
+        // Instant Placement OFF by default (authoring prefers real depth/planes)
         config.setInstantPlacementMode(
                 instantPlacementSettings.isInstantPlacementEnabled()
                         ? Config.InstantPlacementMode.LOCAL_Y_UP

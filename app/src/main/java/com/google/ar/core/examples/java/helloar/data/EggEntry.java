@@ -34,8 +34,16 @@ public class EggEntry {
     public @Nullable Double horizAcc;  // meters (horizontal accuracy)
     public @Nullable Double vertAcc;   // meters (vertical accuracy)
 
-    // Pose snapshot (4x4 matrix flattened, length 16)
+    // Pose snapshot (4x4 matrix flattened, length 16) — optional
     public @Nullable List<Float> poseMatrix;
+
+    // ---------- Persistence / anchoring ----------
+    /** One of: "CLOUD", "GEO", "LOCAL" (string for Firestore simplicity). */
+    public @Nullable String anchorType;
+    /** Cloud Anchor ID (present iff anchorType == "CLOUD"). */
+    public @Nullable String cloudId;
+    /** Days to live used when hosting (optional, for housekeeping/UX). */
+    public @Nullable Integer cloudTtlDays;
 
     // ---------- Media (Storage paths or absolute URLs) ----------
     public @Nullable List<String> photoPaths;   // e.g., /eggs/{docId}/photos/photo_0.jpg
@@ -56,6 +64,12 @@ public class EggEntry {
     // ---------- Collection / engagement ----------
     public @Nullable List<String> collectedBy;
 
+    // ---------- Placement metadata ----------
+    // Which reference image this poseMatrix is relative to (e.g., "plant_marker")
+    public @Nullable String refImage;
+    public @Nullable String placementType;   // "DepthPoint", "Point", "Plane", etc.
+    public @Nullable Float  distanceFromCamera; // Distance in meters
+
     public EggEntry() {
         // Firestore needs a public no-arg constructor
     }
@@ -64,6 +78,17 @@ public class EggEntry {
     public double lat() { return geo != null ? geo.getLatitude() : 0; }
     public double lng() { return geo != null ? geo.getLongitude() : 0; }
     public boolean hasQuiz() { return quiz != null && !quiz.isEmpty(); }
+
+    public boolean isCloudAnchored() { return "CLOUD".equalsIgnoreCase(anchorType) && cloudId != null && !cloudId.isEmpty(); }
+    public boolean isGeospatial()    { return "GEO".equalsIgnoreCase(anchorType) && geo != null; }
+
+    // ---------- (Optional) constants to avoid typos ----------
+    public static final class AnchorTypes {
+        public static final String CLOUD = "CLOUD";
+        public static final String GEO   = "GEO";
+        public static final String LOCAL = "LOCAL";
+        private AnchorTypes() {}
+    }
 
     /**
      * Try to parse a quiz payload that came back from Firestore:
@@ -75,7 +100,7 @@ public class EggEntry {
     public static List<QuizQuestion> parseQuizFromFirestore(@Nullable Object raw) {
         if (raw == null) return null;
 
-        // Case 1: Array of maps (what Firestore typically gives you when you store structured data)
+        // Case 1: Array of maps (typical Firestore structured data)
         if (raw instanceof List<?>) {
             List<?> arr = (List<?>) raw;
             List<QuizQuestion> out = new ArrayList<>();
@@ -105,7 +130,7 @@ public class EggEntry {
             return out.isEmpty() ? null : out;
         }
 
-        // Case 2: JSON string (some Functions return a JSON blob in a single field)
+        // Case 2: JSON string
         if (raw instanceof String) {
             String s = (String) raw;
             try {

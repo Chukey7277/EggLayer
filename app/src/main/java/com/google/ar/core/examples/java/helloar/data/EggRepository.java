@@ -46,22 +46,37 @@ public class EggRepository {
     public Task<DocumentReference> createDraft(EggEntry e) {
         Map<String, Object> doc = new HashMap<>();
 
+        // Identity / content
         if (e.userId != null)        doc.put("userId", e.userId);
         if (e.title != null)         doc.put("title", e.title);
         if (e.description != null)   doc.put("description", e.description);
 
+        // Geospatial
         if (e.geo != null)           doc.put("geo", e.geo);
         if (e.alt != null)           doc.put("alt", e.alt);
         if (e.heading != null)       doc.put("heading", e.heading);
         if (e.horizAcc != null)      doc.put("horizAcc", e.horizAcc);
         if (e.vertAcc != null)       doc.put("vertAcc", e.vertAcc);
 
+        // Pose (optional)
         if (e.poseMatrix != null)    doc.put("poseMatrix", e.poseMatrix);
 
-        // ✅ NEW: persist transcript & quiz on create
+        // Placement metadata (depth/point/plane, augmented image tag, distance)
+        if (e.refImage != null)         doc.put("refImage", e.refImage);
+        if (e.placementType != null)    doc.put("placementType", e.placementType);
+        if (e.distanceFromCamera != null) doc.put("distanceFromCamera", e.distanceFromCamera);
+
+        // Persistence / anchoring mode
+        if (e.anchorType != null)    doc.put("anchorType", e.anchorType);   // "CLOUD" | "GEO" | "LOCAL"
+        if (e.cloudId != null)       doc.put("cloudAnchorId", e.cloudId);         // may be null at creation
+        if (e.cloudTtlDays != null)  doc.put("cloudTtlDays", e.cloudTtlDays);
+
+
+        // Speech + quiz (ok to be null)
         if (e.speechTranscript != null) doc.put("speechTranscript", e.speechTranscript);
         if (e.quiz != null)             doc.put("quiz", e.quiz); // List<EggEntry.QuizQuestion>
 
+        // Media flags + timestamps
         doc.put("hasMedia", false);
         doc.put("createdAt", FieldValue.serverTimestamp());
 
@@ -148,7 +163,7 @@ public class EggRepository {
         return db.collection("eggs").get().onSuccessTask(snap -> {
             List<EggEntry> out = new ArrayList<>();
             snap.getDocuments().forEach(d -> {
-                EggEntry e = d.toObject(EggEntry.class); // will hydrate quiz automatically
+                EggEntry e = d.toObject(EggEntry.class); // hydrates nested fields if present
                 if (e != null) { e.id = d.getId(); out.add(e); }
             });
             return Tasks.forResult(out);
@@ -170,11 +185,9 @@ public class EggRepository {
 
     /** Turn a Storage *path* (e.g. "/eggs/.../photo_0.jpg") into a downloadable URL. */
     public Task<Uri> downloadUrlFromPath(String storagePath) {
-        // Firestore/Storage paths you store often start with "/..."
         String clean = storagePath.startsWith("/") ? storagePath.substring(1) : storagePath;
-        return storage.getStorage().getReference().child(clean).getDownloadUrl();
+        return storage.child(clean).getDownloadUrl(); // storage is already a root reference
     }
-
 
     private static double distanceMeters(double lat1, double lon1, double lat2, double lon2) {
         double R = 6371000d;
@@ -184,6 +197,35 @@ public class EggRepository {
                 + Math.cos(Math.toRadians(lat1))*Math.cos(Math.toRadians(lat2))
                 * Math.sin(dLon/2)*Math.sin(dLon/2);
         return 2*R*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    }
+
+    // ---- New helpers for anchoring ----
+
+    /** Patch Cloud Anchor info after hosting succeeds. Also sets anchorType="CLOUD". */
+    public Task<Void> patchCloudAnchor(DocumentReference docRef, String cloudId, @Nullable Integer ttlDays) {
+        Map<String, Object> patch = new HashMap<>();
+        patch.put("anchorType", EggEntry.AnchorTypes.CLOUD);
+        patch.put("cloudAnchorId", cloudId);
+        if (ttlDays != null) patch.put("cloudTtlDays", ttlDays);
+        patch.put("cloudHostedAt", FieldValue.serverTimestamp());
+        return docRef.update(patch);
+    }
+
+    public Task<Void> patchCloudAnchorByDocId(String docId, String cloudId, @Nullable Integer ttlDays) {
+        return patchCloudAnchor(db.collection("eggs").document(docId), cloudId, ttlDays);
+    }
+
+    /** Optional: patch geospatial accuracy/headings later if you refine them. */
+    public Task<Void> patchGeospatialMeta(DocumentReference docRef,
+                                          @Nullable Double horizAcc,
+                                          @Nullable Double vertAcc,
+                                          @Nullable Double heading) {
+        Map<String, Object> patch = new HashMap<>();
+        if (horizAcc != null) patch.put("horizAcc", horizAcc);
+        if (vertAcc != null)  patch.put("vertAcc", vertAcc);
+        if (heading != null)  patch.put("heading", heading);
+        patch.put("updatedAt", FieldValue.serverTimestamp());
+        return docRef.update(patch);
     }
 
     // ✅ Optional helper if you ever want to regenerate/patch quiz later
