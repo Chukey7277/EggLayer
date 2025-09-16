@@ -32,50 +32,47 @@
                     android:layout_height="wrap_content"
                     android:letterSpacing="0.02"
                     android:paddingBottom="6dp"
-                    android:text="Save this Egg"
+                    android:text="Save this Egg?"
                     android:textSize="22sp"
                     android:textStyle="bold" />
 
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:alpha="0.8"
-                    android:text="Give it a name, short description, photos, and an optional voice note."
-                    android:textSize="14sp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Title -->
+        <!-- Title (required) -->
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/titleLayout"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="16dp"
+            android:layout_marginTop="8dp"
             app:boxCornerRadiusTopStart="14dp"
             app:boxCornerRadiusTopEnd="14dp"
             app:boxCornerRadiusBottomStart="14dp"
             app:boxCornerRadiusBottomEnd="14dp"
-
+            app:counterEnabled="true"
+            app:counterMaxLength="60"
+            app:helperTextEnabled="true"
+            app:helperText="@string/egg_title_helper"
             app:endIconMode="custom"
             app:endIconDrawable="@drawable/ic_mic_24"
-            app:endIconCheckable="false"
             app:endIconContentDescription="@string/cd_dictate_title"
-
-            app:helperTextEnabled="true"
-            app:helperText="" >
+            app:endIconCheckable="false">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/titleInput"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:minHeight="56dp"
-                android:hint="Place name"
-                android:inputType="textCapWords"
-                android:maxLines="1" />
+                android:hint="@string/egg_title_hint"
+                android:inputType="textCapWords|textPersonName"
+                android:maxLines="1"
+                android:imeOptions="actionNext"
+                android:autofillHints="name"
+                android:importantForAutofill="yes" />
         </com.google.android.material.textfield.TextInputLayout>
 
-        <!-- Description -->
+        <!-- Description (required) -->
         <com.google.android.material.textfield.TextInputLayout
             android:id="@+id/descLayout"
             style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
@@ -86,14 +83,14 @@
             app:boxCornerRadiusTopEnd="14dp"
             app:boxCornerRadiusBottomStart="14dp"
             app:boxCornerRadiusBottomEnd="14dp"
-
+            app:counterEnabled="true"
+            app:counterMaxLength="280"
+            app:helperTextEnabled="true"
+            app:helperText="@string/egg_desc_helper"
             app:endIconMode="custom"
             app:endIconDrawable="@drawable/ic_mic_24"
-            app:endIconCheckable="false"
             app:endIconContentDescription="@string/cd_dictate_description"
-
-            app:helperTextEnabled="true"
-            app:helperText="" >
+            app:endIconCheckable="false">
 
             <com.google.android.material.textfield.TextInputEditText
                 android:id="@+id/descInput"
@@ -101,32 +98,23 @@
                 android:layout_height="wrap_content"
                 android:minLines="4"
                 android:maxLines="8"
-                android:hint="Description"
+                android:hint="@string/egg_desc_hint"
                 android:gravity="top|start"
                 android:inputType="textCapSentences|textMultiLine"
                 android:overScrollMode="always"
-                android:scrollbars="vertical"/>
-
+                android:scrollbars="vertical"
+                android:imeOptions="actionDone" />
         </com.google.android.material.textfield.TextInputLayout>
-
-        <!-- Media Section -->
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Add media"
-            android:textStyle="bold"
-            android:textSize="16sp"
-            android:paddingTop="18dp"
-            android:paddingBottom="6dp" />
 
         <!-- Photos card -->
         <com.google.android.material.card.MaterialCardView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
             android:padding="12dp"
-            app:cardCornerRadius="10dp"
-            app:cardUseCompatPadding="true"
-            app:strokeWidth="0dp">
+            app:cardCornerRadius="12dp"
+            app:strokeColor="?attr/colorOutline"
+            app:strokeWidth="1dp">
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -137,15 +125,16 @@
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
                     android:orientation="horizontal"
-                    android:gravity="center_vertical">
+                    android:gravity="center_vertical"
+                    android:baselineAligned="false">
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/addPhotosBtn"
                         style="@style/Widget.Material3.Button.TonalButton"
                         android:layout_width="wrap_content"
                         android:layout_height="wrap_content"
-                        android:text="Add photos"
-                        app:backgroundTint="#DAAACEEB"
+                        android:text="@string/egg_add_photos"
+                        android:contentDescription="@string/cd_add_photos"
                         app:icon="@drawable/ic_photo_library_24"
                         app:iconGravity="textStart"
                         app:iconPadding="8dp"
@@ -155,13 +144,14 @@
                         android:id="@+id/photoHint"
                         android:layout_width="0dp"
                         android:layout_height="wrap_content"
-                        android:layout_weight="2"
-                        android:alpha="0.7"
-                        android:gravity="center"
-                        android:text="Take a photo or pick up to 5" />
+                        android:layout_marginStart="12dp"
+                        android:layout_weight="1"
+                        android:alpha="0.75"
+                        android:text="@string/egg_photo_helper"
+                        android:textAppearance="?attr/textAppearanceBodyMedium" />
                 </LinearLayout>
 
-                <!-- compact preview; grows as you add photos -->
+                <!-- Preview strip (hidden until images exist) -->
                 <HorizontalScrollView
                     android:id="@+id/photoStrip"
                     android:layout_width="match_parent"
@@ -170,7 +160,8 @@
                     android:layout_marginTop="8dp"
                     android:fillViewport="false"
                     android:overScrollMode="always"
-                    android:visibility="gone">
+                    android:visibility="gone"
+                    android:contentDescription="@string/cd_photo_preview_strip">
 
                     <LinearLayout
                         android:id="@+id/mediaPreviewContainer"
@@ -184,11 +175,44 @@
                     android:id="@+id/photoEmpty"
                     android:layout_width="match_parent"
                     android:layout_height="wrap_content"
-                    android:text="No photos yet."
+                    android:text="@string/egg_no_photos"
+                    android:textAppearance="?attr/textAppearanceBodySmall"
                     android:alpha="0.6"
-                    android:paddingTop="6dp"/>
+                    android:paddingTop="6dp" />
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
+
+        <!-- Actions pinned at bottom of content -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:paddingTop="20dp"
+            android:paddingBottom="4dp">
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/cancelBtn"
+                style="@style/Widget.Material3.Button.OutlinedButton"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/action_cancel"
+                android:contentDescription="@string/cd_cancel" />
+
+            <Space
+                android:layout_width="12dp"
+                android:layout_height="1dp" />
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/saveBtn"
+                style="@style/Widget.Material3.Button"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="Save"
+                android:textColor="#FAFAFA"
+                app:backgroundTint="#DA1B5B90"/>
+        </LinearLayout>
 
         <!-- Audio + transcript card (only transcript field changed: now wrapped) -->
 <!--        <com.google.android.material.card.MaterialCardView-->
@@ -424,37 +448,37 @@
 <!--            </LinearLayout>-->
 <!--        </com.google.android.material.card.MaterialCardView>-->
 
-        <!-- Action buttons -->
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="horizontal"
-            android:paddingTop="16dp">
+<!--        &lt;!&ndash; Action buttons &ndash;&gt;-->
+<!--        <LinearLayout-->
+<!--            android:layout_width="match_parent"-->
+<!--            android:layout_height="wrap_content"-->
+<!--            android:orientation="horizontal"-->
+<!--            android:paddingTop="16dp">-->
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/cancelBtn"
-                style="@style/Widget.Material3.Button.OutlinedButton"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Cancel"
-                android:textColor="#5366D5"
-                android:textColorLink="#4252A9" />
+<!--            <com.google.android.material.button.MaterialButton-->
+<!--                android:id="@+id/cancelBtn"-->
+<!--                style="@style/Widget.Material3.Button.OutlinedButton"-->
+<!--                android:layout_width="0dp"-->
+<!--                android:layout_height="wrap_content"-->
+<!--                android:layout_weight="1"-->
+<!--                android:text="Cancel"-->
+<!--                android:textColor="#5366D5"-->
+<!--                android:textColorLink="#4252A9" />-->
 
-            <Space
-                android:layout_width="10dp"
-                android:layout_height="1dp" />
+<!--            <Space-->
+<!--                android:layout_width="10dp"-->
+<!--                android:layout_height="1dp" />-->
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/saveBtn"
-                style="@style/Widget.Material3.Button"
-                android:layout_width="0dp"
-                android:layout_height="wrap_content"
-                android:layout_weight="1"
-                android:text="Save"
-                android:textColor="#FAFAFA"
-                app:backgroundTint="#DA1B5B90" />
-        </LinearLayout>
+<!--            <com.google.android.material.button.MaterialButton-->
+<!--                android:id="@+id/saveBtn"-->
+<!--                style="@style/Widget.Material3.Button"-->
+<!--                android:layout_width="0dp"-->
+<!--                android:layout_height="wrap_content"-->
+<!--                android:layout_weight="1"-->
+<!--                android:text="Save"-->
+<!--                android:textColor="#FAFAFA"-->
+<!--                app:backgroundTint="#DA1B5B90" />-->
+<!--        </LinearLayout>-->
 
     </LinearLayout>
 </ScrollView>

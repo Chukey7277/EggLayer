@@ -19,6 +19,22 @@ public final class QuizGenerator {
             "Nexus Building","Skylark Tower","Harmony Wing","Pioneer House"
     };
 
+    // ---- Generic trivia fallback (used when text yields nothing) ----
+    private static final class Trivia {
+        final String q; final List<String> opts; final int correct;
+        Trivia(String q, List<String> opts, int correct) { this.q = q; this.opts = opts; this.correct = correct; }
+    }
+    private static Trivia T(String q, String a, String b, String c, String d, int correctIdx) {
+        return new Trivia(q, Arrays.asList(a,b,c,d), correctIdx);
+    }
+    private static final List<Trivia> GENERIC_TRIVIA = Arrays.asList(
+            T("What is the capital of India?", "New Delhi", "Mumbai", "Kolkata", "Chennai", 0),
+            T("How many continents are there on Earth?", "7", "5", "6", "8", 0),
+            T("Which is the largest planet in our solar system?", "Jupiter", "Earth", "Mars", "Venus", 0),
+            T("What gas do plants mostly take in?", "Carbon dioxide", "Oxygen", "Nitrogen", "Helium", 0),
+            T("Which ocean is the largest?", "Pacific Ocean", "Atlantic Ocean", "Indian Ocean", "Arctic Ocean", 0)
+    );
+
     private static final Set<String> STOPWORDS = new HashSet<>(Arrays.asList(
             "the","a","an","and","or","but","if","then","else","when","while","for","to","of",
             "in","on","at","by","with","as","is","am","are","was","were","be","been","being",
@@ -26,53 +42,71 @@ public final class QuizGenerator {
             "we","you","they","he","she","i","me","my","your","our","their","them","us"
     ));
 
-    /** Build up to {@code maxQ} multiple-choice questions from free text. */
+    /** Build up to {@code maxQ} multiple-choice questions from free text. Always returns ≥ 1. */
     public static List<EggEntry.QuizQuestion> generate(@Nullable String rawText, int maxQ) {
-        List<EggEntry.QuizQuestion> out = new ArrayList<>();
-        if (rawText == null) return out;
+        final int target = Math.max(1, maxQ);
+        final List<EggEntry.QuizQuestion> out = new ArrayList<>();
 
-        // Normalize whitespace
-        String text = rawText.replace('\n', ' ').replaceAll("\\s+", " ").trim();
-        if (text.isEmpty()) return out;
+        // Normalize (do NOT early-return; we want fallback even if empty)
+        String text = (rawText == null) ? "" : rawText.replace('\n', ' ').replaceAll("\\s+", " ").trim();
 
-        // Split into sentences for easier patterning
-        String[] sentences = text.split("(?<=[.!?])\\s+");
-
-        // Collect proper-noun phrases from the whole text (for distractors)
+        // Collect proper-noun phrases (for distractors)
         List<String> properPhrases = extractProperNounPhrases(text);
 
-        // Shuffle sentences so we get varied questions
-        List<String> shuffled = new ArrayList<>(Arrays.asList(sentences));
-        Collections.shuffle(shuffled, new Random());
+        if (!text.isEmpty()) {
+            // Split into sentences and shuffle for variety
+            String[] sentences = text.split("(?<=[.!?])\\s+");
+            List<String> shuffled = new ArrayList<>(Arrays.asList(sentences));
+            Collections.shuffle(shuffled, new Random());
 
-        for (String s : shuffled) {
-            EggEntry.QuizQuestion q;
+            for (String s : shuffled) {
+                EggEntry.QuizQuestion q;
 
-            q = tryWhereQuestion(s, properPhrases);
-            if (addIfValid(out, q, maxQ)) break;
+                q = tryWhereQuestion(s, properPhrases);
+                if (addIfValid(out, q, target)) break;
 
-            q = tryWhenQuestion(s);
-            if (addIfValid(out, q, maxQ)) break;
+                q = tryWhenQuestion(s);
+                if (addIfValid(out, q, target)) break;
 
-            q = tryHowManyQuestion(s);
-            if (addIfValid(out, q, maxQ)) break;
+                q = tryHowManyQuestion(s);
+                if (addIfValid(out, q, target)) break;
 
-            q = tryWhatNameQuestion(s, properPhrases);
-            if (addIfValid(out, q, maxQ)) break;
+                q = tryWhatNameQuestion(s, properPhrases);
+                if (addIfValid(out, q, target)) break;
+            }
         }
 
-        // If still nothing, fabricate a very generic location/name question from pools
+        // If still nothing, pick a simple, friendly fallback.
         if (out.isEmpty()) {
-            EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
-            q.question = "Which place is mentioned here?";
-            List<String> opts = new ArrayList<>();
-            String correct = properPhrases.isEmpty() ? FALLBACK_PLACES[0] : properPhrases.get(0);
-            opts.add(correct);
-            fillWithFallbacks(opts, Arrays.asList(FALLBACK_PLACES), 4);
-            shuffleKeepAnswer(opts, correct, q);
-            out.add(q);
+            if (!properPhrases.isEmpty()) {
+                String qText = "Which place is mentioned here?";
+                List<String> opts = new ArrayList<>();
+                String correct = properPhrases.get(0);
+                opts.add(correct);
+                fillWithFallbacks(opts, Arrays.asList(FALLBACK_PLACES), 4);
+                int idx = shuffleAndFindIndex(opts, correct);
+
+                EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
+                q.q = ensureQuestionMark(qText);
+                q.question = q.q;              // keep both fields filled
+                q.options = opts;
+                q.answer = idx;
+                q.correctIndex = idx;
+                out.add(q);
+            } else {
+                Trivia t = GENERIC_TRIVIA.get(new Random().nextInt(GENERIC_TRIVIA.size()));
+                EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
+                q.q = ensureQuestionMark(t.q);
+                q.question = q.q;              // keep both fields filled
+                q.options = new ArrayList<>(t.opts);
+                q.answer = t.correct;
+                q.correctIndex = t.correct;
+                out.add(q);
+            }
         }
 
+        // Cap to target
+        if (out.size() > target) return new ArrayList<>(out.subList(0, target));
         return out;
     }
 
@@ -88,7 +122,8 @@ public final class QuizGenerator {
         if (place.isEmpty()) return null;
 
         EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
-        q.question = "Where is this located?";
+        q.q = "Where is this located?";
+        q.question = q.q;
         q.options = new ArrayList<>();
         q.options.add(place);
 
@@ -99,7 +134,9 @@ public final class QuizGenerator {
         }
         if (distractors.isEmpty()) distractors = Arrays.asList(FALLBACK_PLACES);
         fillWithFallbacks(q.options, distractors, 4);
-        shuffleKeepAnswer(q.options, place, q);
+
+        q.answer = shuffleAndFindIndex(q.options, place);
+        q.correctIndex = q.answer;
         return q;
     }
 
@@ -114,7 +151,8 @@ public final class QuizGenerator {
 
         int year = Integer.parseInt(ym.group());
         EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
-        q.question = "In which year was it " + pickVerb(s) + "?";
+        q.q = "In which year was it " + pickVerb(s) + "?";
+        q.question = q.q;
 
         // Options around the true year
         Set<String> opts = new LinkedHashSet<>();
@@ -127,7 +165,8 @@ public final class QuizGenerator {
             if (candidate >= 1900 && candidate <= 2100) opts.add(String.valueOf(candidate));
         }
         q.options = new ArrayList<>(opts);
-        shuffleKeepAnswer(q.options, String.valueOf(year), q);
+        q.answer = shuffleAndFindIndex(q.options, String.valueOf(year));
+        q.correctIndex = q.answer;
         return q;
     }
 
@@ -141,7 +180,9 @@ public final class QuizGenerator {
         String noun = m.group(2).toLowerCase(Locale.US);
 
         EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
-        q.question = "How many " + noun + " are there?";
+        q.q = "How many " + noun + " are there?";
+        q.question = q.q;
+
         Set<String> opts = new LinkedHashSet<>();
         opts.add(String.valueOf(n));
         // Nearby numbers as distractors
@@ -150,8 +191,10 @@ public final class QuizGenerator {
             if (opts.size() >= 4) break;
         }
         while (opts.size() < 4) opts.add(String.valueOf(n + opts.size())); // fallback
+
         q.options = new ArrayList<>(opts);
-        shuffleKeepAnswer(q.options, String.valueOf(n), q);
+        q.answer = shuffleAndFindIndex(q.options, String.valueOf(n));
+        q.correctIndex = q.answer;
         return q;
     }
 
@@ -164,7 +207,8 @@ public final class QuizGenerator {
         if (name.isEmpty()) return null;
 
         EggEntry.QuizQuestion q = new EggEntry.QuizQuestion();
-        q.question = "What is it called?";
+        q.q = "What is it called?";
+        q.question = q.q;
         q.options = new ArrayList<>();
         q.options.add(name);
 
@@ -174,18 +218,33 @@ public final class QuizGenerator {
         }
         if (distractors.isEmpty()) distractors = Arrays.asList(FALLBACK_NAMES);
         fillWithFallbacks(q.options, distractors, 4);
-        shuffleKeepAnswer(q.options, name, q);
+
+        q.answer = shuffleAndFindIndex(q.options, name);
+        q.correctIndex = q.answer;
         return q;
     }
 
     // ---------- Helpers ----------
 
-    private static boolean addIfValid(List<EggEntry.QuizQuestion> out, @Nullable EggEntry.QuizQuestion q, int maxQ) {
+    private static boolean addIfValid(List<EggEntry.QuizQuestion> out, @Nullable EggEntry.QuizQuestion q, int target) {
         if (q == null) return false;
         if (q.options == null || q.options.size() < 2) return false;
-        if (q.correctIndex == null || q.correctIndex < 0 || q.correctIndex >= q.options.size()) return false;
+
+        // Ensure exactly 4 options (pad if needed)
+        while (q.options.size() < 4) q.options.add("Option " + (q.options.size() + 1));
+        if (q.options.size() > 4) q.options = new ArrayList<>(q.options.subList(0, 4));
+
+        Integer idx = (q.correctIndex != null) ? q.correctIndex : q.answer;
+        if (idx == null || idx < 0 || idx >= q.options.size()) return false;
+
+        // Normalize fields so both authoring and hunter code can read them
+        q.correctIndex = idx;
+        q.answer = idx;
+        q.question = ensureQuestionMark(safeText(q.question));
+        q.q = ensureQuestionMark(safeText(q.q != null ? q.q : q.question));
+
         out.add(q);
-        return out.size() >= Math.max(1, maxQ);
+        return out.size() >= target;
     }
 
     private static void fillWithFallbacks(List<String> list, List<String> pool, int targetSize) {
@@ -199,19 +258,18 @@ public final class QuizGenerator {
         while (list.size() < targetSize) list.add("Option " + (i++));
     }
 
-    private static void shuffleKeepAnswer(List<String> opts, String correct, EggEntry.QuizQuestion q) {
+    private static int shuffleAndFindIndex(List<String> opts, String correct) {
         Collections.shuffle(opts, new Random());
-        q.options = new ArrayList<>(opts);
         int idx = 0;
         for (int i = 0; i < opts.size(); i++) {
             if (opts.get(i).equalsIgnoreCase(correct)) { idx = i; break; }
         }
-        q.correctIndex = idx;
-        if (q.question != null && !q.question.trim().endsWith("?")) q.question = q.question.trim() + "?";
+        return idx;
     }
 
     /** Very light “proper noun phrase” extractor: sequences of Capitalized words / acronyms. */
     private static List<String> extractProperNounPhrases(String text) {
+        if (text == null || text.isEmpty()) return Collections.emptyList();
         List<String> out = new ArrayList<>();
         String[] toks = text.split("\\s+");
         StringBuilder cur = new StringBuilder();
@@ -265,6 +323,14 @@ public final class QuizGenerator {
         if (low.contains("opened"))      return "opened";
         return "built";
     }
+
+    private static String ensureQuestionMark(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        return t.endsWith("?") ? t : (t + "?");
+    }
+
+    private static String safeText(String s) { return (s == null) ? "" : s; }
 
     private QuizGenerator() {}
 }

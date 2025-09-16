@@ -48,7 +48,7 @@ public class EggRepository {
 
         // Identity / content
         if (e.userId != null)        doc.put("userId", e.userId);
-        if (e.title != null)         doc.put("title", e.title);
+        if (e.title != null)         doc.put("title",e.title);
         if (e.description != null)   doc.put("description", e.description);
 
         // Geospatial
@@ -68,7 +68,7 @@ public class EggRepository {
 
         // Persistence / anchoring mode
         if (e.anchorType != null)    doc.put("anchorType", e.anchorType);   // "CLOUD" | "GEO" | "LOCAL"
-        if (e.cloudId != null)       doc.put("cloudAnchorId", e.cloudId);         // may be null at creation
+        if (e.cloudId != null)       doc.put("cloudId", e.cloudId);         // may be null at creation
         if (e.cloudTtlDays != null)  doc.put("cloudTtlDays", e.cloudTtlDays);
 
 
@@ -89,8 +89,7 @@ public class EggRepository {
     public Task<Void> uploadMediaAndPatch(
             DocumentReference docRef,
             @Nullable List<Uri> photoUris,
-            @Nullable Uri audioUri,
-            @Nullable String speechTranscript
+            @Nullable Uri audioUri
     ) {
         final String docId = docRef.getId();
         final List<Task<String>> photoUploadTasks = new ArrayList<>();
@@ -124,7 +123,6 @@ public class EggRepository {
                         Map<String, Object> patch = new HashMap<>();
                         patch.put("photoPaths", photoPaths);
                         patch.put("audioPath", audioPath);
-                        patch.put("speechTranscript", speechTranscript);
                         patch.put("hasMedia", true);
                         patch.put("updatedAt", FieldValue.serverTimestamp());
                         return docRef.update(patch);
@@ -134,7 +132,6 @@ public class EggRepository {
                 Map<String, Object> patch = new HashMap<>();
                 patch.put("photoPaths", photoPaths);
                 patch.put("hasMedia", photoPaths != null && !photoPaths.isEmpty());
-                patch.put("speechTranscript", speechTranscript);
                 patch.put("updatedAt", FieldValue.serverTimestamp());
                 return docRef.update(patch);
             });
@@ -205,7 +202,7 @@ public class EggRepository {
     public Task<Void> patchCloudAnchor(DocumentReference docRef, String cloudId, @Nullable Integer ttlDays) {
         Map<String, Object> patch = new HashMap<>();
         patch.put("anchorType", EggEntry.AnchorTypes.CLOUD);
-        patch.put("cloudAnchorId", cloudId);
+        patch.put("cloudId", cloudId);
         if (ttlDays != null) patch.put("cloudTtlDays", ttlDays);
         patch.put("cloudHostedAt", FieldValue.serverTimestamp());
         return docRef.update(patch);

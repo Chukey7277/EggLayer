@@ -59,6 +59,8 @@ import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.ListenerRegistration;
 
 
+
+
 /** Bottom sheet to capture egg details + photos (no transcript / audio-note). */
 public class EggCardSheet extends BottomSheetDialogFragment {
 
@@ -89,7 +91,6 @@ public class EggCardSheet extends BottomSheetDialogFragment {
     public interface Listener {
         void onSave(String title,
                     String description,
-                    String transcript,     // we will send "" now
                     List<Uri> photoUris,
                     @Nullable Uri audioUri, // we will send null now
                     @Nullable GeoPoseSnapshot geoPose);
@@ -203,13 +204,44 @@ public class EggCardSheet extends BottomSheetDialogFragment {
             String title = safeText(titleInput);
             String desc  = safeText(descInput);
 
-            // (Optional) keep existing callback for your app logic
+//            // (Optional) keep existing callback for your app logic
+//            if (listener != null) {
+//                listener.onSave(title, desc, /*transcript*/"", new ArrayList<>(pickedPhotoUris), /*audio*/null, geoPoseSnapshot);
+//            }
+            // Clear any previous error
+            titleLayout.setError(null);
+            descLayout.setError(null);
+
+            boolean hasError = false;
+
+            if (title.isEmpty()) {
+                titleLayout.setError("Title is required");
+                titleInput.requestFocus();
+                hasError = true;
+            }
+
+            if (desc.isEmpty()) {
+                descLayout.setError("Description is required");
+                if (!hasError) { // Focus description only if title valid
+                    descInput.requestFocus();
+                }
+                hasError = true;
+            }
+
+            if (hasError) return;
+
             if (listener != null) {
-                listener.onSave(title, desc, /*transcript*/"", new ArrayList<>(pickedPhotoUris), /*audio*/null, geoPoseSnapshot);
+                listener.onSave(
+                        title,
+                        desc,
+                        new ArrayList<>(pickedPhotoUris),
+                        /* audio */ null,
+                        geoPoseSnapshot
+                );
             }
 
             // Kick off quiz generation via Firestore
-            requestQuizGeneration(title, desc);
+//            requestQuizGeneration(title, desc);
 
             // You can dismiss here or after the quiz arrives; up to you.
             dismissAllowingStateLoss();

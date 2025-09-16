@@ -43,7 +43,12 @@ public class EggEntry {
     /** Cloud Anchor ID (present iff anchorType == "CLOUD"). */
     public @Nullable String cloudId;
     /** Days to live used when hosting (optional, for housekeeping/UX). */
-    public @Nullable Integer cloudTtlDays;
+    public @Nullable Long cloudTtlDays;             // Long (hunter expects Long)
+    /** When Cloud Anchor hosting succeeded. */
+    public @Nullable Timestamp cloudHostedAt;       // hunter checks expiry
+    /** Optional status + error for UX/diagnostics. */
+    public @Nullable String cloudStatus;            // e.g., HOSTING, SUCCESS, ERROR, NO_HOSTABLE_ANCHOR
+    public @Nullable String cloudError;
 
     // ---------- Media (Storage paths or absolute URLs) ----------
     public @Nullable List<String> photoPaths;   // e.g., /eggs/{docId}/photos/photo_0.jpg
@@ -77,7 +82,12 @@ public class EggEntry {
     // ---------- Convenience ----------
     public double lat() { return geo != null ? geo.getLatitude() : 0; }
     public double lng() { return geo != null ? geo.getLongitude() : 0; }
-    public boolean hasQuiz() { return quiz != null && !quiz.isEmpty(); }
+
+    public boolean hasQuiz() {
+        if (quiz == null || quiz.isEmpty()) return false;
+        for (QuizQuestion q : quiz) if (q != null && q.isPlausible()) return true;
+        return false;
+    }
 
     public boolean isCloudAnchored() { return "CLOUD".equalsIgnoreCase(anchorType) && cloudId != null && !cloudId.isEmpty(); }
     public boolean isGeospatial()    { return "GEO".equalsIgnoreCase(anchorType) && geo != null; }
@@ -94,6 +104,7 @@ public class EggEntry {
      * Try to parse a quiz payload that came back from Firestore:
      *  • Either a List<Map<String,Object>> (preferred)
      *  • Or a JSON string: [{"question": "...","options": ["a","b"],"correctIndex": 1}, ...]
+     *  Also accepts hunter-style aliases: { "q": "...", "answer": 1 }.
      */
     @SuppressWarnings("unchecked")
     @Nullable
@@ -109,11 +120,16 @@ public class EggEntry {
                 Map<String, Object> m = (Map<String, Object>) o;
 
                 QuizQuestion q = new QuizQuestion();
+
                 Object qText = m.get("question");
+                if (!(qText instanceof String)) qText = m.get("q");
+
                 Object opts  = m.get("options");
                 Object idx   = m.get("correctIndex");
+                if (!(idx instanceof Number)) idx = m.get("answer");
 
                 q.question = (qText instanceof String) ? (String) qText : null;
+                q.q = q.question; // mirror for hunter UI
 
                 if (opts instanceof List<?>) {
                     List<?> rawOpts = (List<?>) opts;
@@ -123,7 +139,11 @@ public class EggEntry {
                     }
                 }
 
-                if (idx instanceof Number) q.correctIndex = ((Number) idx).intValue();
+                if (idx instanceof Number) {
+                    int i = ((Number) idx).intValue();
+                    q.correctIndex = i;
+                    q.answer = i; // mirror
+                }
 
                 if (q.isPlausible()) out.add(q);
             }
@@ -141,7 +161,11 @@ public class EggEntry {
                     if (obj == null) continue;
 
                     QuizQuestion q = new QuizQuestion();
-                    q.question = obj.optString("question", null);
+
+                    String qText = obj.optString("question", null);
+                    if (qText == null || qText.isEmpty()) qText = obj.optString("q", null);
+                    q.question = qText;
+                    q.q = qText;
 
                     JSONArray ja = obj.optJSONArray("options");
                     if (ja != null) {
@@ -152,9 +176,9 @@ public class EggEntry {
                         }
                     }
 
-                    if (obj.has("correctIndex")) {
-                        q.correctIndex = obj.optInt("correctIndex", 0);
-                    }
+                    int idx = obj.has("correctIndex") ? obj.optInt("correctIndex", 0) : obj.optInt("answer", 0);
+                    q.correctIndex = idx;
+                    q.answer = idx;
 
                     if (q.isPlausible()) out.add(q);
                 }
@@ -168,21 +192,29 @@ public class EggEntry {
         return null;
     }
 
-    /** Single multiple-choice question. */
+    /** Single multiple-choice question. Supports both authoring and hunter field names. */
     public static class QuizQuestion {
+        // Authoring-style
         public String question;         // e.g., “Paris is the capital of ____.”
         public List<String> options;    // choices (size >= 2)
         public Integer correctIndex;    // index into options (0-based)
 
+        // Hunter-style aliases (kept in sync when we set/parse)
+        public String q;                // same as question
+        public Integer answer;          // same as correctIndex
+
         public QuizQuestion() {}        // Firestore needs no-arg
 
         public boolean isPlausible() {
-            return question != null
-                    && options != null
-                    && options.size() >= 2
-                    && correctIndex != null
-                    && correctIndex >= 0
-                    && correctIndex < options.size();
+            Integer idx = (correctIndex != null) ? correctIndex : answer;
+            List<String> opts = options;
+            String text = (question != null) ? question : q;
+            return text != null
+                    && opts != null
+                    && opts.size() >= 2
+                    && idx != null
+                    && idx >= 0
+                    && idx < opts.size();
         }
     }
 }

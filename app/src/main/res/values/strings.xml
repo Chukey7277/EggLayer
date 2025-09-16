@@ -19,8 +19,27 @@
   <string name="cd_settings">Open settings</string>
   <string name="tt_settings">Settings</string>
 
+
+
+  <string name="egg_sheet_title">Save this Egg?</string>
+  <string name="egg_sheet_subtitle">Give it a name, a short description, and optional photos.</string>
+  <string name="egg_title_hint">Name</string>
+  <string name="egg_title_helper"></string>
+  <string name="egg_desc_hint">Description</string>
+  <string name="egg_desc_helper"></string>
+  <string name="egg_media_header">Add media (optional)</string>
+  <string name="egg_add_photos">Add photos</string>
+  <string name="egg_photo_helper">Take a photo or pick up to 5</string>
+  <string name="egg_no_photos">No photos yet.</string>
+  <string name="action_cancel">Cancel</string>
+  <string name="action_save">Save</string>
+  <string name="cd_add_photos">Add photos to this egg</string>
+  <string name="cd_photo_preview_strip">Selected photos preview</string>
   <string name="cd_dictate_title">Dictate title</string>
   <string name="cd_dictate_description">Dictate description</string>
+  <string name="cd_cancel">Cancel and close</string>
+  <string name="cd_save">Save this egg</string>
+
 
   <string name="arcore_api_key">AIzaSyCTKfPYnVPRdR_NXhmTjt1iCYi4jJBOQ4A</string>
   <string translatable="false" name="depth_use_explanation">When Depth is enabled on supported devices, virtual objects adapt to the environment by blending in with the real world.</string>
