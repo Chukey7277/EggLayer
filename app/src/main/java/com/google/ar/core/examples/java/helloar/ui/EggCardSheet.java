@@ -58,6 +58,10 @@ import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
 import com.google.firebase.firestore.ListenerRegistration;
 
+import com.bumptech.glide.load.engine.DiskCacheStrategy;
+import com.bumptech.glide.request.RequestOptions;
+
+
 
 
 
@@ -627,14 +631,21 @@ public class EggCardSheet extends BottomSheetDialogFragment {
 
     private void pickFromGallery() {
         if (Build.VERSION.SDK_INT >= 33) {
-            if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.READ_MEDIA_IMAGES)
-                    != PackageManager.PERMISSION_GRANTED) {
+            if (ContextCompat.checkSelfPermission(requireContext(),
+                    Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
                 requestReadImagesPermission.launch(Manifest.permission.READ_MEDIA_IMAGES);
                 return;
             }
+        } else {
+            if (ContextCompat.checkSelfPermission(requireContext(),
+                    Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                requestReadImagesPermission.launch(Manifest.permission.READ_EXTERNAL_STORAGE);
+                return;
+            }
         }
-        pickFromGalleryNow();
+        pickFromGalleryNow(); // launches GetMultipleContents("image/*")
     }
+
 
     private void pickFromGalleryNow() {
         pickMultipleImagesLauncher.launch("image/*");
@@ -663,9 +674,17 @@ public class EggCardSheet extends BottomSheetDialogFragment {
             iv.setLayoutParams(lp);
             iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
             iv.setClipToOutline(true);
-            iv.setImageURI(u);
+
+            // Use Glide – handles all sorts of content:// and file:// Uris
+            com.bumptech.glide.Glide.with(this)
+                    .load(u)
+                    .placeholder(android.R.drawable.ic_menu_report_image)
+                    .error(android.R.drawable.ic_menu_report_image)
+                    .into(iv);
+
             mediaPreviewContainer.addView(iv);
         }
+
     }
 
     // --------------------------- Utils ---------------------------
