@@ -18,9 +18,18 @@
 precision mediump float;
 
 uniform samplerExternalOES u_CameraColorTexture;
+/* 1.0 = no zoom, >1.0 zooms in (expects BackgroundRenderer to set it each frame) */
+uniform float u_Zoom;
 
 in vec2 v_CameraTexCoord;
 
 layout(location = 0) out vec4 o_FragColor;
 
-void main() { o_FragColor = texture(u_CameraColorTexture, v_CameraTexCoord); }
+void main() {
+  // Scale UVs about the center so the view "zooms" without stretching.
+  vec2 center = vec2(0.5, 0.5);
+  float z = max(u_Zoom, 1.0);         // clamp at runtime, but guard here too
+  vec2 uv = (v_CameraTexCoord - center) / z + center;
+
+  o_FragColor = texture(u_CameraColorTexture, uv);
+}
