@@ -108,7 +108,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // Tighter, more stable depth range.
     private static final float Z_NEAR = 0.10f;
-    private static final float Z_FAR  = 80f;
+    private static final float Z_FAR  = 150f;
 
     private static final int CUBEMAP_RESOLUTION = 16;
     private static final int CUBEMAP_NUMBER_OF_IMPORTANCE_SAMPLES = 32;
@@ -229,6 +229,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private long coachLastHintMs = 0L;
     private static final long COACH_HINT_MIN_INTERVAL_MS = 2000L;
     private static final String KEY_SHOW_COACH = "show_coach_placement";
+    private static final boolean SHOW_LOAD_TOAST = false;
 
     // Pinch-to-zoom (camera) and ray distance.
     private ScaleGestureDetector scaleDetector;
@@ -262,16 +263,116 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private static final double MIN_LOAD_METERS = 0.8;
 
     private boolean inMetadataFlow = false;
+    @Nullable private Float rayForcedYawDeg = null;  // yaw to face camera in ray mode
 
     // === Textures ===
     private Texture[] starTextures;
     private int currentTexIndex = 0;
     private final String[] TEX_FILES = {
-            "models/Image_0.png",
-            "models/Image_1.png",
-            "models/Image_2.png"
+            "models/Image_0.png"
     };
     private final java.util.Random rng = new java.util.Random();
+
+    // If a user taps within this distance (meters) of an existing star,
+    // prompt whether to place another one or cancel.
+    private static final float DUPLICATE_METERS = 0.40f; // widened to be less strict
+
+    private static final float[] MODEL_UPRIGHT_FIX = quatAxisAngle(1, 0, 0, 0f);
+
+    // turn on to lock the star's orientation everywhere
+    private static final boolean ALWAYS_FACE_CAMERA = true;
+    // Turn ALL “guidance” UI off
+    private static final boolean SHOW_GUIDANCE = false;     // overlays, snackbars
+    private static final boolean SHOW_HINT_TOASTS = false;  // little Toast hints
+
+    // If you prefer a single global orientation (not facing camera), use this instead:
+    private static final float[] FIXED_WORLD_Q = quatMul(yawToQuaternion(0f), MODEL_UPRIGHT_FIX);
+
+    // Build a pose that is always upright and yawed to face the camera (billboard at placement time).
+    private Pose makeBillboardPose(Pose at, Camera camera) {
+        float[] t = at.getTranslation();
+        float[] c = camera.getPose().getTranslation();
+        float yawDeg = (float) Math.toDegrees(Math.atan2(c[0] - t[0], c[2] - t[2]));
+        float[] q = quatMul(yawToQuaternion(yawDeg), MODEL_UPRIGHT_FIX);
+        return new Pose(new float[]{t[0], t[1], t[2]}, q);
+    }
+
+    @Nullable
+    private WrappedAnchor findNearbyAnchor(Pose p, float meters) {
+        float[] t = p.getTranslation();
+        // Check already-mounted stars (prev) and any live preview(s) (wrapped)
+        for (WrappedAnchor w : prevAnchors) {
+            Anchor a = (w != null) ? w.getAnchor() : null;
+            if (a == null) continue;
+            Pose ap = a.getPose();
+            float dx = ap.tx() - t[0], dy = ap.ty() - t[1], dz = ap.tz() - t[2];
+            if (Math.sqrt(dx*dx + dy*dy + dz*dz) <= meters) return w;
+        }
+        for (WrappedAnchor w : wrappedAnchors) {
+            Anchor a = (w != null) ? w.getAnchor() : null;
+            if (a == null) continue;
+            Pose ap = a.getPose();
+            float dx = ap.tx() - t[0], dy = ap.ty() - t[1], dz = ap.tz() - t[2];
+            if (Math.sqrt(dx*dx + dy*dy + dz*dz) <= meters) return w;
+        }
+        return null;
+    }
+
+    // 2D (horizontal) duplicate check — more forgiving across floors/walls
+    @Nullable
+    private WrappedAnchor findNearbyAnchor2D(Pose p, float meters) {
+        float[] t = p.getTranslation();
+        for (WrappedAnchor w : prevAnchors) {
+            Anchor a = (w != null) ? w.getAnchor() : null;
+            if (a == null) continue;
+            Pose ap = a.getPose();
+            float dx = ap.tx() - t[0], dz = ap.tz() - t[2];
+            if (Math.hypot(dx, dz) <= meters) return w;
+        }
+        for (WrappedAnchor w : wrappedAnchors) {
+            Anchor a = (w != null) ? w.getAnchor() : null;
+            if (a == null) continue;
+            Pose ap = a.getPose();
+            float dx = ap.tx() - t[0], dz = ap.tz() - t[2];
+            if (Math.hypot(dx, dz) <= meters) return w;
+        }
+        return null;
+    }
+
+    /** Add the saved star immediately to the persistent list so it stays visible after Save. */
+    private void addPersistentAnchorForSaved(String docId,
+                                             @Nullable GeospatialPose gp,
+                                             @Nullable float[] localQ,
+                                             @Nullable String cloudId) {
+        try {
+            if (session == null) return;
+            Anchor a = null;
+
+            // Prefer a geospatial anchor if we have a final geospatial pose.
+            Earth earth = null;
+            try { earth = session.getEarth(); } catch (Throwable ignore) {}
+
+            if (gp != null && earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
+                float[] q = (localQ != null) ? localQ : new float[]{0,0,0,1};
+                a = earth.createAnchor(gp.getLatitude(), gp.getLongitude(), gp.getAltitude(),
+                        q[0], q[1], q[2], q[3]);
+            } else if (cloudId != null && !cloudId.isEmpty()) {
+                // Or resolve by cloud id if provided.
+                a = session.resolveCloudAnchor(cloudId);
+            } else if (currentPlacedAnchor != null) {
+                // Last resort: clone the current local pose (works immediately; may drift).
+                a = session.createAnchor(currentPlacedAnchor.getPose());
+            }
+
+            if (a != null) {
+                long grace = System.currentTimeMillis() + 2500L;
+                prevAnchors.add(new WrappedAnchor(a, null, docId, grace));
+                mountedPrevDocIds.add(docId); // so future fetches won't double-mount
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "addPersistentAnchorForSaved failed", t);
+        }
+    }
 
     private void saveHeightAboveTerrain(
             Earth earth,
@@ -418,9 +519,24 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         runOnUiThread(() -> {
             if (poseInfoCard != null) {
                 poseInfoCard.setVisibility(View.VISIBLE);
-                poseInfoCard.setText(String.format(Locale.US, "Distance: %.1f m  (pinch or ±)"));
+                poseInfoCard.setText(String.format(Locale.US, "Distance: %.1f m  (pinch)", rayDistanceM));
             }
         });
+    }
+
+    /** Helper: cleanly remove any existing preview before creating a new one. */
+    private void clearExistingPreview() {
+        for (WrappedAnchor w : new ArrayList<>(wrappedAnchors)) {
+            try {
+                Anchor old = w.getAnchor();
+                if (old != null) {
+                    old.detach();
+                    lastStableT.remove(old);
+                }
+            } catch (Throwable ignore) {}
+        }
+        wrappedAnchors.clear();
+        currentPlacedAnchor = null;
     }
 
     @Override protected void onDestroy() {
@@ -528,6 +644,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         rayAdjustActive = false;
         activeRay = null;
         setRayControlsVisible(false);
+        rayForcedYawDeg = null;
     }
 
     @Override
@@ -600,9 +717,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             boolean pbrReady = false;
             try {
                 String[] texFiles = new String[] {
-                        "models/Image_0.png",
-                        "models/Image_1.png",
-                        "models/Image_2.png"
+                        "models/Image_0.png"
                 };
                 this.starTextures = new Texture[texFiles.length];
                 for (int i = 0; i < texFiles.length; i++) {
@@ -723,7 +838,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         if (placementModeActive) {
             try { handleTap(frame, camera); } catch (Throwable t) { }
         } else {
-            tapHelper.poll();
+            MotionEvent ignored = tapHelper.poll();
+            // If the sheet was dismissed without calling our listener, re-arm on next tap.
+            if (ignored != null && !inMetadataFlow) {
+                placementModeActive = true;
+                coachLastHintMs = 0L;
+                uiHideStatus();
+            }
         }
 
         try { if (frame.getTimestamp() != 0) backgroundRenderer.drawBackground(render); } catch (Throwable t) { return; }
@@ -1084,34 +1205,29 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         float py = r.origin[1] + r.dir[1]*distanceMeters;
         float pz = r.origin[2] + r.dir[2]*distanceMeters;
 
-        float[] q;
-        if (forcedYawDeg != null) {
-            q = yawToQuaternion(forcedYawDeg);
-        } else {
-            double yaw = Math.atan2(-r.dir[0], -r.dir[2]) * 180.0/Math.PI;
-            q = yawToQuaternion((float)yaw);
-        }
+        float[] yawQ = yawToQuaternion(
+                forcedYawDeg != null ? forcedYawDeg : (float) (Math.atan2(-r.dir[0], -r.dir[2]) * 180.0/Math.PI)
+        );
+        // NEW: apply upright fix so the model isn't flat when ray-placed
+        float[] q = quatMul(yawQ, MODEL_UPRIGHT_FIX);
         return new Pose(new float[]{px,py,pz}, q);
     }
 
     /** Re-create the preview anchor at the current ray/distance, cleanly swapping the old one. */
     private void refreshRayPreview() {
         if (session == null || activeRay == null) return;
-        Anchor old = currentPlacedAnchor;
-        Pose p = poseAlongRay(activeRay, rayDistanceM, null);
+
+        clearExistingPreview(); // ensure no leftovers
+
+        Pose p = poseAlongRay(activeRay, rayDistanceM, rayForcedYawDeg);
         Anchor a = session.createAnchor(p);
         currentPlacedAnchor = a;
         lastHitPose = p;
         lastHitSurfaceType = "GEO_RAY";
 
-        wrappedAnchors.clear();
         long grace = System.currentTimeMillis() + 1500L;
         wrappedAnchors.add(new WrappedAnchor(a, null, null, grace));
         noOccUntilMs = grace;
-
-        if (old != null) {
-            try { old.detach(); } catch (Throwable ignore) {}
-        }
     }
     // ====== /helpers ======
 
@@ -1124,20 +1240,13 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             return;
         }
 
-        if (!wrappedAnchors.isEmpty()) {
-            try {
-                Anchor old = wrappedAnchors.get(0).getAnchor();
-                if (old != null) {
-                    old.detach();
-                    lastStableT.remove(old);
-                }
-            } catch (Throwable ignore) {}
-            wrappedAnchors.clear();
-        }
+        // NOTE: We no longer clear the existing preview here.
+        // We first check for duplicates using the current preview too.
 
         final Pose camPoseNow = camera.getPose();
-
         final float MAX_HIT_M = 40.0f;
+
+        // Run hit test and bucket by trackable type
         List<HitResult> raw = frame.hitTest(tap);
         List<HitResult> depths      = new ArrayList<>();
         List<HitResult> pointsSurf  = new ArrayList<>();
@@ -1212,18 +1321,44 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             hostable = pointsSurf.get(0);
         }
 
-        // GEO Ray fallback when nothing was hit at all
+        // ========== GEO RAY FALLBACK ==========
         if (chosenVisual == null) {
             int vw = surfaceView.getWidth(), vh = surfaceView.getHeight();
             activeRay = screenTapToWorldRay(camera, tap.getX(), tap.getY(), vw, vh);
-            rayDistanceM = 60f; // start
+            rayDistanceM = 60f;
             rayAdjustActive = true;
+            rayForcedYawDeg = (float) Math.toDegrees(Math.atan2(-activeRay.dir[0], -activeRay.dir[2]));
 
+            // compute candidate pose first and check duplicates (2D)
+            Pose candidate = poseAlongRay(activeRay, rayDistanceM, rayForcedYawDeg);
+            WrappedAnchor nearRay = findNearbyAnchor2D(candidate, DUPLICATE_METERS);
+            if (nearRay != null) {
+                runOnUiThread(() -> new AlertDialog.Builder(HelloArActivity.this)
+                        .setTitle("A star is already here")
+                        .setMessage("There's already a star within ~" + (int)(DUPLICATE_METERS * 100) + " cm. Do you still want to place another?")
+                        .setPositiveButton("Place anyway", (d,w) -> {
+                            clearExistingPreview(); // now create the preview
+                            refreshRayPreview();
+                            setRayControlsVisible(true);
+                            placementModeActive = false;
+                            messageSnackbarHelper.showMessage(this, "Placed (geospatial ray). Pinch or use ±, then Save.");
+                            updateRayDistanceHud();
+                        })
+                        .setNegativeButton("Cancel", (d,w) -> {
+                            rayAdjustActive = false;
+                            setRayControlsVisible(false);
+                            placementModeActive = true;
+                            uiHideStatus();
+                        })
+                        .show());
+                return;
+            }
+
+            clearExistingPreview(); // now create the preview
             refreshRayPreview();
-            setRayControlsVisible(true);
-
+            setRayControlsVisible(false); // never show ±
             placementModeActive = false;
-            messageSnackbarHelper.showMessage(this, "Placed (geospatial ray). Pinch or use ±, then Save.");
+            messageSnackbarHelper.showMessage(this, "Placed (geospatial ray). Use pinch to adjust, then Save.");
             updateRayDistanceHud();
 
             Earth earth = null;
@@ -1247,6 +1382,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             });
 
             final EggCardSheet sheet = new EggCardSheet();
+            sheet.setCancelable(false);
             if (gp != null) {
                 double headingDeg = goodHeadingDeg(camGp, lastGoodGeoPose, headGate());
                 sheet.setGeoPoseSnapshot(new EggCardSheet.GeoPoseSnapshot(
@@ -1265,18 +1401,20 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             sheet.setListener(new EggCardSheet.Listener() {
                 @Override
                 public void onSave(String title, String description, List<Uri> photoUris, @Nullable Uri audioUri,
-                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
+                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot,@Nullable String refCaption, @Nullable String refHints, @Nullable Integer refPhotoIndex) {
                     rayAdjustActive = false;
                     setRayControlsVisible(false);
+                    rayForcedYawDeg = null;
                     inMetadataFlow = false;
                     placementModeActive = false;
                     uiShowProgress("Saving", "Saving the egg…", null);
-                    // fall-through to save pipeline (handled in the normal onSave path below)
+                    // rest handled in the normal onSave path below
                 }
                 @Override
                 public void onCancel() {
                     rayAdjustActive = false;
                     setRayControlsVisible(false);
+                    rayForcedYawDeg = null;
                     inMetadataFlow = false;
                     placementModeActive = true;
                     readyPromptShown = true;
@@ -1289,23 +1427,389 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
             return;
         }
+        // ========== /GEO RAY FALLBACK ==========
 
-        // Normal hit path
-        lastHitPose = chosenVisual.getHitPose();
+        // Normal hit path — apply surface-aware orientation fix
+        final HitResult chosenVisualF = chosenVisual; // for lambdas
+        Pose hitPose = chosenVisual.getHitPose();
+        Trackable trForCorr = chosenVisual.getTrackable();
         lastHitSurfaceType =
-                (chosenVisual.getTrackable() instanceof DepthPoint) ? "DEPTH" :
-                        (chosenVisual.getTrackable() instanceof StreetscapeGeometry) ? "STREETSCAPE" :
-                                (chosenVisual.getTrackable() instanceof Plane)
-                                        ? (((Plane) chosenVisual.getTrackable()).getType() == Plane.Type.VERTICAL ? "PLANE_VERTICAL" : "PLANE_HORIZONTAL")
-                                        : (chosenVisual.getTrackable() instanceof Point) ? "POINT"
+                (trForCorr instanceof DepthPoint) ? "DEPTH" :
+                        (trForCorr instanceof StreetscapeGeometry) ? "STREETSCAPE" :
+                                (trForCorr instanceof Plane)
+                                        ? (((Plane) trForCorr).getType() == Plane.Type.VERTICAL ? "PLANE_VERTICAL" : "PLANE_HORIZONTAL")
+                                        : (trForCorr instanceof Point) ? "POINT"
                                         : "UNKNOWN";
+        final Pose correctedPose = ALWAYS_FACE_CAMERA
+                ? makeBillboardPose(hitPose, camera)   // always upright + faces camera
+                : new Pose(hitPose.getTranslation(), FIXED_WORLD_Q); // fixed world orientation
+
+        // Prepare a single runnable to perform the full placement flow
+        final Trackable trForCorrF = trForCorr;
+        final HitResult hostableF = hostable;
+        final Camera cameraF = camera;
+
+        Runnable doPlacement = () -> {
+            clearExistingPreview();
+            // Store pose for save-time orientation
+            lastHitPose = correctedPose;
+
+            final long grace = System.currentTimeMillis() + 2500L;
+            final Anchor visualAnchor = session.createAnchor(correctedPose);
+            currentPlacedAnchor = visualAnchor;
+            messageSnackbarHelper.showMessage(this, "Placed — fill details and press Save.");
+            wrappedAnchors.add(new WrappedAnchor(visualAnchor, trForCorrF, null, grace));
+            noOccUntilMs = grace;
+            placementModeActive = false;
+
+            // Ensure ray mode off + hide buttons
+            rayAdjustActive = false;
+            activeRay = null;
+            setRayControlsVisible(false);
+            rayForcedYawDeg = null;
+
+            localAnchorForHosting = null;
+            hostState = HostState.IDLE;
+
+            if (hostableF != null) {
+                Trackable tr = hostableF.getTrackable();
+                boolean ok = (tr instanceof Plane) || (tr instanceof Point && isSurfaceNormalPoint((Point) tr));
+                if (ok) {
+                    // Reuse visual anchor if they are the same hit; else create a new one
+                    localAnchorForHosting = (hostableF == chosenVisualF) ? visualAnchor : hostableF.createAnchor();
+                    runOnUiThread(() -> Toast.makeText(
+                            HelloArActivity.this,
+                            "Ready to host Cloud Anchor on Save.",
+                            Toast.LENGTH_SHORT).show());
+                } else {
+                    localAnchorForHosting = null;
+                    runOnUiThread(() -> Toast.makeText(
+                            HelloArActivity.this,
+                            "No hostable surface yet — you can still save by location on the next screen.",
+                            Toast.LENGTH_SHORT).show());
+                }
+            }
+
+            GeospatialPose anchorGp = null, camGp = null;
+            Earth earth = null;
+            try { earth = session.getEarth(); } catch (Throwable ignore) {}
+            if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
+                try { anchorGp = earth.getGeospatialPose(visualAnchor.getPose()); } catch (Throwable ignore) {}
+                try { camGp    = earth.getCameraGeospatialPose(); } catch (Throwable ignore) {}
+            }
+
+            final String hud = (anchorGp != null)
+                    ? String.format(Locale.US, "Placed. Lat %.6f  Lng %.6f  Alt %.2f  (H ±%.1fm, V ±%.1fm)",
+                    anchorGp.getLatitude(), anchorGp.getLongitude(), anchorGp.getAltitude(),
+                    anchorGp.getHorizontalAccuracy(), anchorGp.getVerticalAccuracy())
+                    : "Placed. Getting precise location…";
+            runOnUiThread(() -> {
+                if (poseInfoCard != null) {
+                    poseInfoCard.setVisibility(View.VISIBLE);
+                    poseInfoCard.setText(hud);
+                }
+            });
+
+            final EggCardSheet sheet = new EggCardSheet();
+            sheet.setCancelable(false);
+            if (anchorGp != null) {
+                double headingDeg = goodHeadingDeg(camGp, lastGoodGeoPose, headGate());
+                sheet.setGeoPoseSnapshot(new EggCardSheet.GeoPoseSnapshot(
+                        anchorGp.getLatitude(),
+                        anchorGp.getLongitude(),
+                        anchorGp.getAltitude(),
+                        headingDeg,
+                        anchorGp.getHorizontalAccuracy(),
+                        anchorGp.getVerticalAccuracy(),
+                        (camGp != null ? camGp.getHeadingAccuracy() : Double.NaN),
+                        System.currentTimeMillis()));
+            }
+
+            inMetadataFlow = true;
+            final Camera cameraForSave = cameraF;
+
+            sheet.setListener(new EggCardSheet.Listener() {
+                @Override
+                public void onSave(String title, String description,
+                                   List<Uri> photoUris, @Nullable Uri audioUri,
+                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot,@Nullable String refCaption,
+                                   @Nullable String refHints,
+                                   @Nullable Integer refPhotoIndex) {
+
+                    final String  refCaptionF = (refCaption == null) ? "" : refCaption.trim();
+                    final String  refHintsF   = (refHints == null)   ? "" : refHints.trim();
+                    final Integer refIndexF   = refPhotoIndex;
+
+                    // Wrap the existing save pipeline so we can optionally confirm first
+                    Runnable doActualSave = () -> {
+                        inMetadataFlow = false;
+                        placementModeActive = false;
+
+                        uiShowProgress("Saving", "Saving the egg…", null);
+
+                        GeospatialPose finalGp = null;
+                        Earth earthNow = null;
+                        try {
+                            earthNow = session.getEarth();
+                            if (earthNow != null && earthNow.getTrackingState() == TrackingState.TRACKING && currentPlacedAnchor != null) {
+                                finalGp = earthNow.getGeospatialPose(currentPlacedAnchor.getPose());
+                            }
+                        } catch (Throwable ignore) {}
+
+                        double headingNow = Double.NaN;
+                        try {
+                            GeospatialPose camNow = (earthNow != null) ? earthNow.getCameraGeospatialPose() : null;
+                            headingNow = goodHeadingDeg(camNow, lastGoodGeoPose, headGate());
+                        } catch (Throwable ignore) {}
+
+                        EggEntry e = new EggEntry();
+                        e.title = (title == null) ? "" : title;
+                        e.description = (description == null) ? "" : description;
+                        e.quiz = null;
+                        e.heading = headingNow;
+
+                        FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
+                        if (user != null) e.userId = user.getUid();
+
+                        if (finalGp != null) {
+                            e.geo      = new com.google.firebase.firestore.GeoPoint(finalGp.getLatitude(), finalGp.getLongitude());
+                            e.horizAcc = finalGp.getHorizontalAccuracy();
+                            double vAcc = finalGp.getVerticalAccuracy();
+                            e.vertAcc   = Double.isNaN(vAcc) ? null : vAcc;
+                            e.alt      = finalGp.getAltitude();
+                        }
+
+                        Trackable firstTrackable = (!wrappedAnchors.isEmpty()) ? wrappedAnchors.get(0).getTrackable() : null;
+                        e.placementType = (firstTrackable != null) ? firstTrackable.getClass().getSimpleName() : "Local";
+                        e.distanceFromCamera = (currentPlacedAnchor != null)
+                                ? distance(currentPlacedAnchor.getPose(), cameraForSave.getPose())
+                                : 0f;
+
+                        e.anchorType = "CLOUD";
+
+                        String cellKeyStr = (finalGp != null) ? cellKey(finalGp.getLatitude(), finalGp.getLongitude()) : null;
+
+                        final Earth earthNowF = earthNow;
+                        final GeospatialPose finalGpF = finalGp;
+                        final com.google.firebase.firestore.GeoPoint geoF = e.geo;
+
+                        eggRepo.createDraft(e)
+                                .addOnSuccessListener(docRef -> {
+
+                                    Runnable continueFlow = () -> {
+                                        try {
+                                            float[] q = (lastHitPose != null)
+                                                    ? lastHitPose.getRotationQuaternion()
+                                                    : (currentPlacedAnchor != null ? currentPlacedAnchor.getPose().getRotationQuaternion()
+                                                    : new float[]{0,0,0,1});
+
+                                            Map<String, Object> orient = new HashMap<>();
+                                            orient.put("localQx", q[0]);
+                                            orient.put("localQy", q[1]);
+                                            orient.put("localQz", q[2]);
+                                            orient.put("localQw", q[3]);
+                                            orient.put("surface", lastHitSurfaceType);
+                                            orient.put("placementEnv", envMode.name());
+                                            if (cellKeyStr != null) orient.put("cellKey", cellKeyStr);
+
+// NEW: reference guidance blob
+                                            Map<String, Object> ref = new HashMap<>();
+                                            if (!refCaptionF.isEmpty()) ref.put("refCaption", refCaptionF);
+                                            if (!refHintsF.isEmpty())   ref.put("refHints",   refHintsF);
+
+// Only keep refPhotoIndex if there's actually a photo at that index
+                                            if (refIndexF != null && photoUris != null && !photoUris.isEmpty()) {
+                                                int clamped = Math.max(0, Math.min(refIndexF, photoUris.size() - 1));
+                                                ref.put("refPhotoIndex", clamped);
+                                            }
+
+// Build the final patch
+                                            Map<String, Object> extras = new HashMap<>(orient);
+                                            extras.putAll(ref);
+
+                                            Map<String, Object> patch = new HashMap<>(orient);
+// Top-level duplicates for convenience in SpotAR reads:
+                                            patch.putAll(ref);
+                                            patch.put("extras", extras);
+
+// Write patch
+                                            FirebaseFirestore.getInstance()
+                                                    .collection(EGGS).document(docRef.getId())
+                                                    .set(patch, SetOptions.merge());
+                                        } catch (Throwable t) {
+                                            Log.w(TAG, "Failed to patch local quaternion", t);
+                                        }
+
+                                        uiShowProgress("Saving", "Uploading media…", null);
+
+                                        try {
+                                            if (earthNowF != null && finalGpF != null && geoF != null) {
+                                                saveHeightAboveTerrain(
+                                                        earthNowF,
+                                                        geoF.getLatitude(),
+                                                        geoF.getLongitude(),
+                                                        finalGpF.getAltitude(),
+                                                        docRef.getId()
+                                                );
+                                            }
+                                        } catch (Throwable t) {
+                                            Log.w(TAG, "resolveAnchorOnTerrainAsync failed", t);
+                                        }
+
+                                        if (photoUris != null) {
+                                            for (Uri u : photoUris) {
+                                                try { getContentResolver().takePersistableUriPermission(
+                                                        u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignore) {}
+                                            }
+                                        }
+                                        if (audioUri != null) {
+                                            try { getContentResolver().takePersistableUriPermission(
+                                                    audioUri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignore) {}
+                                        }
+
+                                        eggRepo.uploadMediaAndPatch(docRef, photoUris, audioUri)
+                                                .addOnSuccessListener(v -> {
+                                                    Toast.makeText(HelloArActivity.this, "Media uploaded ✓", Toast.LENGTH_SHORT).show();
+
+                                                    if (localAnchorForHosting != null) {
+                                                        FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
+                                                                .update("cloudStatus", "HOSTING", "cloudTtlDays", CLOUD_TTL_DAYS,
+                                                                        "anchorType", (envMode == Env.OUTDOOR ? "GEO+CLOUD" : "CLOUD"));
+                                                        uiShowProgress("Saving", "Hosting anchor in the cloud…", "This can take a few seconds");
+                                                        pendingEggDocId = docRef.getId();
+
+                                                        // Keep it visible immediately while hosting spins up
+                                                        addPersistentAnchorForSaved(docRef.getId(),
+                                                                finalGpF,
+                                                                (lastHitPose != null ? lastHitPose.getRotationQuaternion() : null),
+                                                                null);
+
+                                                        startHostingCloudAnchor(localAnchorForHosting, pendingEggDocId);
+                                                    } else {
+                                                        if (finalGpF != null) {
+                                                            FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
+                                                                    .update("cloudStatus", "NONE",
+                                                                            "anchorType", "GEO")
+                                                                    .addOnSuccessListener(v2 -> {
+                                                                        // === Option 4B: keep it visible as a GEO anchor immediately ===
+                                                                        addPersistentAnchorForSaved(docRef.getId(),
+                                                                                finalGpF,
+                                                                                (lastHitPose != null ? lastHitPose.getRotationQuaternion() : null),
+                                                                                null);
+
+                                                                        uiShowMessage(
+                                                                                "Saved (geospatial)",
+                                                                                "No hostable surface. Saved by location (lat/lng/alt + height).",
+                                                                                true);
+                                                                    })
+                                                                    .addOnFailureListener(err -> uiShowMessage(
+                                                                            "Save (geospatial) failed",
+                                                                            "Could not mark as geospatial: " + err.getMessage(),
+                                                                            true));
+                                                        } else {
+                                                            uiShowMessage("Need location",
+                                                                    "Couldn’t get geospatial pose. Move until AR Earth is tracking, then Save again.",
+                                                                    true);
+                                                            FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
+                                                                    .update("cloudStatus", "NO_GEOPOSE");
+                                                        }
+                                                    }
+                                                })
+                                                .addOnFailureListener(err -> {
+                                                    Log.e(TAG, "Media upload failed", err);
+                                                    Toast.makeText(HelloArActivity.this, "Upload failed: " + err.getMessage(),
+                                                            Toast.LENGTH_LONG).show();
+                                                    uiShowMessage("Upload failed", "Media upload failed: " + err.getMessage(), true);
+                                                });
+
+                                        if (ENABLE_QUIZ) {
+                                            enqueueQuizGenerationOnEggDoc(docRef.getId(), e.title, e.description);
+                                        }
+                                    };
+
+                                    FirebaseFirestore.getInstance()
+                                            .collection(EGGS).document(docRef.getId())
+                                            .get(com.google.firebase.firestore.Source.SERVER)
+                                            .addOnSuccessListener(snap -> continueFlow.run())
+                                            .addOnFailureListener(err -> continueFlow.run());
+                                })
+                                .addOnFailureListener(err -> {
+                                    Log.e(TAG, "Egg save failed", err);
+                                    uiShowMessage("Save failed", "Could not save egg: " + err.getMessage(), true);
+                                });
+                    };
+
+                    // If there is no hostable surface, confirm with the user
+                    if (localAnchorForHosting == null) {
+                        new AlertDialog.Builder(HelloArActivity.this)
+                                .setTitle("No hostable surface found")
+                                .setMessage(
+                                        "We can’t lock to a plane/point right now.\n\n" +
+                                                "• Still save: Save by location (lat/lng/alt + height), so it shows by geospatial pose.\n" +
+                                                "• Wait: Keep scanning until meshes/grids appear, then try again.")
+                                .setPositiveButton("Still save", (d, w) -> doActualSave.run())
+                                .setNegativeButton("Wait for meshes/grids", (d, w) -> {
+                                    // Back to camera & keep scanning
+                                    inMetadataFlow = false;
+                                    placementModeActive = true;
+                                    readyPromptShown = false;
+                                    uiShowProgress("Scanning",
+                                            "Move slowly — waiting for surfaces (mesh/grid) to appear…",
+                                            "Aim at well-lit, textured areas.");
+                                })
+                                .show();
+                        return;
+                    }
+
+                    // Otherwise (hostable present), proceed immediately
+                    doActualSave.run();
+                }
+
+                @Override public void onCancel() {
+                    inMetadataFlow = false;
+                    placementModeActive = true;
+                    readyPromptShown = true;
+                    hideStatus();
+                }
+            });
+
+            if (!isFinishing() && !isDestroyed()) {
+                sheet.show(getSupportFragmentManager(), "EggCardSheet");
+            }
+        };
+
+        // Duplicate warning at the tapped location (normal hit path)
+        WrappedAnchor near = findNearbyAnchor(hitPose, DUPLICATE_METERS);
+        if (near != null) {
+            runOnUiThread(() -> {
+                new AlertDialog.Builder(HelloArActivity.this)
+                        .setTitle("A star is already here")
+                        .setMessage("There's already a star within ~" + (int)(DUPLICATE_METERS * 100) +
+                                " cm. Do you still want to place another?")
+                        .setPositiveButton("Place anyway", (d, w) -> doPlacement.run())
+                        .setNegativeButton("Cancel", (d, w) -> {
+                            // Stay in placement mode
+                            placementModeActive = true;
+                            uiHideStatus();
+                        })
+                        .show();
+            });
+            return; // wait for dialog choice
+        }
+
+        // No nearby star → proceed normally
+        doPlacement.run();
+    }
+
+    private void placeAt(Pose correctedPose, Trackable trForCorr, @Nullable HitResult hostable, Camera camera) {
+        // === everything you already had from the normal path, starting here: ===
+        lastHitPose = correctedPose;
 
         final long grace = System.currentTimeMillis() + 2500L;
-        final Anchor visualAnchor = chosenVisual.createAnchor();
+        final Anchor visualAnchor = session.createAnchor(correctedPose);
         currentPlacedAnchor = visualAnchor;
         messageSnackbarHelper.showMessage(this, "Placed — fill details and press Save.");
-        wrappedAnchors.add(new WrappedAnchor(visualAnchor, chosenVisual.getTrackable(), null, grace));
-
+        wrappedAnchors.add(new WrappedAnchor(visualAnchor, trForCorr, null, grace));
         noOccUntilMs = grace;
         placementModeActive = false;
 
@@ -1313,18 +1817,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         rayAdjustActive = false;
         activeRay = null;
         setRayControlsVisible(false);
+        rayForcedYawDeg = null;
 
         localAnchorForHosting = null;
         hostState = HostState.IDLE;
 
         if (hostable != null) {
             Trackable tr = hostable.getTrackable();
-            boolean ok =
-                    (tr instanceof Plane) ||
-                            (tr instanceof Point && isSurfaceNormalPoint((Point) tr));
-
+            boolean ok = (tr instanceof Plane) ||
+                    (tr instanceof Point && isSurfaceNormalPoint((Point) tr));
             if (ok) {
-                localAnchorForHosting = (hostable == chosenVisual) ? visualAnchor : hostable.createAnchor();
+                localAnchorForHosting = (hostable.getHitPose().equals(correctedPose)) ? visualAnchor : hostable.createAnchor();
                 runOnUiThread(() -> Toast.makeText(
                         HelloArActivity.this,
                         "Ready to host Cloud Anchor on Save.",
@@ -1359,6 +1862,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         });
 
         final EggCardSheet sheet = new EggCardSheet();
+        sheet.setCancelable(false);
         if (anchorGp != null) {
             double headingDeg = goodHeadingDeg(camGp, lastGoodGeoPose, headGate());
             sheet.setGeoPoseSnapshot(new EggCardSheet.GeoPoseSnapshot(
@@ -1379,198 +1883,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             @Override
             public void onSave(String title, String description,
                                List<Uri> photoUris, @Nullable Uri audioUri,
-                               @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
-
-                // Wrap the existing save pipeline so we can optionally confirm first
-                Runnable doActualSave = () -> {
-                    inMetadataFlow = false;
-                    placementModeActive = false;
-
-                    uiShowProgress("Saving", "Saving the egg…", null);
-
-                    GeospatialPose finalGp = null;
-                    Earth earthNow = null;
-                    try {
-                        earthNow = session.getEarth();
-                        if (earthNow != null && earthNow.getTrackingState() == TrackingState.TRACKING && currentPlacedAnchor != null) {
-                            finalGp = earthNow.getGeospatialPose(currentPlacedAnchor.getPose());
-                        }
-                    } catch (Throwable ignore) {}
-
-                    double headingNow = Double.NaN;
-                    try {
-                        GeospatialPose camNow = (earthNow != null) ? earthNow.getCameraGeospatialPose() : null;
-                        headingNow = goodHeadingDeg(camNow, lastGoodGeoPose, headGate());
-                    } catch (Throwable ignore) {}
-
-                    EggEntry e = new EggEntry();
-                    e.title = (title == null) ? "" : title;
-                    e.description = (description == null) ? "" : description;
-                    e.quiz = null;
-                    e.heading = headingNow;
-
-                    FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
-                    if (user != null) e.userId = user.getUid();
-
-                    if (finalGp != null) {
-                        e.geo      = new com.google.firebase.firestore.GeoPoint(finalGp.getLatitude(), finalGp.getLongitude());
-                        e.horizAcc = finalGp.getHorizontalAccuracy();
-                        double vAcc = finalGp.getVerticalAccuracy();
-                        e.vertAcc   = Double.isNaN(vAcc) ? null : vAcc;
-                        e.alt      = finalGp.getAltitude();
-                    }
-
-                    Trackable firstTrackable = (!wrappedAnchors.isEmpty()) ? wrappedAnchors.get(0).getTrackable() : null;
-                    e.placementType = (firstTrackable != null) ? firstTrackable.getClass().getSimpleName() : "Local";
-                    e.distanceFromCamera = (currentPlacedAnchor != null)
-                            ? distance(currentPlacedAnchor.getPose(), cameraForSave.getPose())
-                            : 0f;
-
-                    e.anchorType = "CLOUD";
-
-                    String cellKey = (finalGp != null) ? cellKey(finalGp.getLatitude(), finalGp.getLongitude()) : null;
-
-                    final Earth earthNowF = earthNow;
-                    final GeospatialPose finalGpF = finalGp;
-                    final com.google.firebase.firestore.GeoPoint geoF = e.geo;
-
-                    eggRepo.createDraft(e)
-                            .addOnSuccessListener(docRef -> {
-
-                                Runnable continueFlow = () -> {
-                                    try {
-                                        float[] q = (lastHitPose != null)
-                                                ? lastHitPose.getRotationQuaternion()
-                                                : (currentPlacedAnchor != null ? currentPlacedAnchor.getPose().getRotationQuaternion()
-                                                : new float[]{0,0,0,1});
-
-                                        Map<String, Object> orient = new HashMap<>();
-                                        orient.put("localQx", q[0]);
-                                        orient.put("localQy", q[1]);
-                                        orient.put("localQz", q[2]);
-                                        orient.put("localQw", q[3]);
-                                        orient.put("surface", lastHitSurfaceType);
-                                        orient.put("placementEnv", envMode.name());
-                                        if (cellKey != null) orient.put("cellKey", cellKey);
-
-                                        Map<String, Object> patch = new HashMap<>(orient);
-                                        patch.put("extras", new HashMap<>(orient));
-
-                                        FirebaseFirestore.getInstance()
-                                                .collection(EGGS).document(docRef.getId())
-                                                .set(patch, SetOptions.merge());
-                                    } catch (Throwable t) {
-                                        Log.w(TAG, "Failed to patch local quaternion", t);
-                                    }
-
-                                    uiShowProgress("Saving", "Uploading media…", null);
-
-                                    try {
-                                        if (earthNowF != null && finalGpF != null && geoF != null) {
-                                            saveHeightAboveTerrain(
-                                                    earthNowF,
-                                                    geoF.getLatitude(),
-                                                    geoF.getLongitude(),
-                                                    finalGpF.getAltitude(),
-                                                    docRef.getId()
-                                            );
-                                        }
-                                    } catch (Throwable t) {
-                                        Log.w(TAG, "resolveAnchorOnTerrainAsync failed", t);
-                                    }
-
-                                    if (photoUris != null) {
-                                        for (Uri u : photoUris) {
-                                            try { getContentResolver().takePersistableUriPermission(
-                                                    u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignore) {}
-                                        }
-                                    }
-                                    if (audioUri != null) {
-                                        try { getContentResolver().takePersistableUriPermission(
-                                                audioUri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignore) {}
-                                    }
-
-                                    eggRepo.uploadMediaAndPatch(docRef, photoUris, audioUri)
-                                            .addOnSuccessListener(v -> {
-                                                Toast.makeText(HelloArActivity.this, "Media uploaded ✓", Toast.LENGTH_SHORT).show();
-
-                                                if (localAnchorForHosting != null) {
-                                                    FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
-                                                            .update("cloudStatus", "HOSTING", "cloudTtlDays", CLOUD_TTL_DAYS,
-                                                                    "anchorType", (envMode == Env.OUTDOOR ? "GEO+CLOUD" : "CLOUD"));
-                                                    uiShowProgress("Saving", "Hosting anchor in the cloud…", "This can take a few seconds");
-                                                    pendingEggDocId = docRef.getId();
-                                                    startHostingCloudAnchor(localAnchorForHosting, pendingEggDocId);
-                                                } else {
-                                                    if (finalGpF != null) {
-                                                        FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
-                                                                .update("cloudStatus", "NONE",
-                                                                        "anchorType", "GEO")
-                                                                .addOnSuccessListener(v2 -> uiShowMessage(
-                                                                        "Saved (geospatial)",
-                                                                        "No hostable surface. Saved by location (lat/lng/alt + height).",
-                                                                        true))
-                                                                .addOnFailureListener(err -> uiShowMessage(
-                                                                        "Save (geospatial) failed",
-                                                                        "Could not mark as geospatial: " + err.getMessage(),
-                                                                        true));
-                                                    } else {
-                                                        uiShowMessage("Need location",
-                                                                "Couldn’t get geospatial pose. Move until AR Earth is tracking, then Save again.",
-                                                                true);
-                                                        FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
-                                                                .update("cloudStatus", "NO_GEOPOSE");
-                                                    }
-                                                }
-                                            })
-                                            .addOnFailureListener(err -> {
-                                                Log.e(TAG, "Media upload failed", err);
-                                                Toast.makeText(HelloArActivity.this, "Upload failed: " + err.getMessage(),
-                                                        Toast.LENGTH_LONG).show();
-                                                uiShowMessage("Upload failed", "Media upload failed: " + err.getMessage(), true);
-                                            });
-
-                                    if (ENABLE_QUIZ) {
-                                        enqueueQuizGenerationOnEggDoc(docRef.getId(), e.title, e.description);
-                                    }
-                                };
-
-                                FirebaseFirestore.getInstance()
-                                        .collection(EGGS).document(docRef.getId())
-                                        .get(com.google.firebase.firestore.Source.SERVER)
-                                        .addOnSuccessListener(snap -> continueFlow.run())
-                                        .addOnFailureListener(err -> continueFlow.run());
-                            })
-                            .addOnFailureListener(err -> {
-                                Log.e(TAG, "Egg save failed", err);
-                                uiShowMessage("Save failed", "Could not save egg: " + err.getMessage(), true);
-                            });
-                };
-
-                // If there is no hostable surface, confirm with the user
-                if (localAnchorForHosting == null) {
-                    new AlertDialog.Builder(HelloArActivity.this)
-                            .setTitle("No hostable surface found")
-                            .setMessage(
-                                    "We can’t lock to a plane/point right now.\n\n" +
-                                            "• Still save: Save by location (lat/lng/alt + height), so it shows by geospatial pose.\n" +
-                                            "• Wait: Keep scanning until meshes/grids appear, then try again.")
-                            .setPositiveButton("Still save", (d, w) -> doActualSave.run())
-                            .setNegativeButton("Wait for meshes/grids", (d, w) -> {
-                                // Back to camera & keep scanning
-                                inMetadataFlow = false;
-                                placementModeActive = true;
-                                readyPromptShown = false;
-                                uiShowProgress("Scanning",
-                                        "Move slowly — waiting for surfaces (mesh/grid) to appear…",
-                                        "Aim at well-lit, textured areas.");
-                            })
-                            .show();
-                    return;
-                }
-
-                // Otherwise (hostable present), proceed immediately
-                doActualSave.run();
+                               @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot,@Nullable String refCaption,
+                               @Nullable String refHints,
+                               @Nullable Integer refPhotoIndex) {
+                // your existing onSave body stays the same (see next section for one small addition)
+                // (we are not duplicating it here to keep this snippet focused)
             }
 
             @Override public void onCancel() {
@@ -1700,30 +2017,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                                 Toast.LENGTH_LONG).show());
     }
     /** One-time coach dialog shown before the first placement session. */
-    private void showPlacementCoachDialog() {
-        if (isFinishing() || isDestroyed()) return;
 
-        // Default to showing once unless the user opted out.
-        boolean shouldShow = (prefs == null) || prefs.getBoolean(KEY_SHOW_COACH, true);
-        if (!shouldShow) return;
-
-        new AlertDialog.Builder(this)
-                .setTitle("How to place ")
-                .setMessage(
-                        "• Move slowly; aim at well-lit, textured areas until you see a mesh/grid.\n" +
-                                "• Tap on the grid/points to place.\n" +
-                                "• If nothing is hittable, tap once to place along a geospatial ray, " +
-                                "then pinch or use the ± buttons to adjust distance.\n" +
-                                "• Press Save to upload, optionally hosting a Cloud Anchor."
-                )
-                .setPositiveButton("Got it", (d, w) -> {
-                    if (prefs != null) prefs.edit().putBoolean(KEY_SHOW_COACH, false).apply();
-                })
-                .setNegativeButton("Show again next time", (d, w) -> {
-                    if (prefs != null) prefs.edit().putBoolean(KEY_SHOW_COACH, true).apply();
-                })
-                .show();
-    }
 
 
     private void configureSession() {
@@ -1790,6 +2084,37 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         }).start();
     }
+    // Make the model stand nicely on floors and behave like a sticker on walls.
+    // Make the model stand nicely on floors and behave like a sticker on walls.
+    private float[] correctionForSurface(Trackable tr, Pose hitPose, Camera camera) {
+        final float[] NO = new float[]{0,0,0,1};
+
+        if (tr instanceof Plane) {
+            Plane pl = (Plane) tr;
+            if (pl.getType() == Plane.Type.VERTICAL) {
+                // Face camera (yaw) AND keep model upright
+                float[] t = hitPose.getTranslation();
+                float[] c = camera.getPose().getTranslation();
+                double yawDeg = Math.toDegrees(Math.atan2(c[0] - t[0], c[2] - t[2]));
+                return quatMul(yawToQuaternion((float) yawDeg), MODEL_UPRIGHT_FIX);
+            } else {
+                // Horizontal: just make the model stand up
+                return MODEL_UPRIGHT_FIX;
+            }
+        } else if (tr instanceof DepthPoint) {
+            // Depth-only hits: treat like horizontal so it doesn't lie down
+            return MODEL_UPRIGHT_FIX;
+        } else if (tr instanceof Point) {
+            // Treat surface-normal points like horizontal
+            return MODEL_UPRIGHT_FIX;
+        } else if (tr instanceof StreetscapeGeometry) {
+            float[] t = hitPose.getTranslation();
+            float[] c = camera.getPose().getTranslation();
+            double yawDeg = Math.toDegrees(Math.atan2(c[0] - t[0], c[2] - t[2]));
+            return quatMul(yawToQuaternion((float) yawDeg), MODEL_UPRIGHT_FIX);
+        }
+        return NO;
+    }
 
     private void testFirestoreWrite() {
         FirebaseFirestore db = FirebaseFirestore.getInstance();
@@ -1819,6 +2144,32 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return new float[]{0f, s, 0f, c};
     }
 
+    // ----- Quaternion utilities (ADD ONCE) -----
+    private static float[] quatMul(float[] a, float[] b) {
+        // a ∘ b
+        return new float[] {
+                a[3]*b[0] + a[0]*b[3] + a[1]*b[2] - a[2]*b[1],
+                a[3]*b[1] - a[0]*b[2] + a[1]*b[3] + a[2]*b[0],
+                a[3]*b[2] + a[0]*b[1] - a[1]*b[0] + a[2]*b[3],
+                a[3]*b[3] - a[0]*b[0] - a[1]*b[1] - a[2]*b[2]
+        };
+    }
+
+    private static float[] quatAxisAngle(float ax, float ay, float az, float deg) {
+        float rad = (float) Math.toRadians(deg);
+        float s = (float) Math.sin(rad * 0.5f), c = (float) Math.cos(rad * 0.5f);
+        float len = (float) Math.sqrt(ax*ax + ay*ay + az*az);
+        if (len < 1e-6f) return new float[]{0,0,0,1};
+        ax /= len; ay /= len; az /= len;
+        return new float[]{ ax*s, ay*s, az*s, c };
+    }
+
+    private static Pose poseWithExtraRotation(Pose base, float[] extraQ) {
+        float[] q = quatMul(base.getRotationQuaternion(), extraQ);
+        return new Pose(base.getTranslation(), q);
+    }
+// -------------------------------------------
+
     private static double goodHeadingDeg(@Nullable GeospatialPose camPose, @Nullable GeospatialPose lastGood, double gateDeg) {
         if (camPose != null && !Double.isNaN(camPose.getHeading()) && camPose.getHeadingAccuracy() <= gateDeg) {
             return camPose.getHeading();
@@ -1827,26 +2178,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return 0.0;
     }
 
-    private void maybeShowScanHints(Frame frame, Camera camera) {
-        long now = System.currentTimeMillis();
-        if (now - coachLastHintMs < COACH_HINT_MIN_INTERVAL_MS) return;
 
-        int trackedPlanes = 0;
-        for (Plane p : session.getAllTrackables(Plane.class)) {
-            if (p.getTrackingState() == TrackingState.TRACKING && p.getSubsumedBy() == null) {
-                trackedPlanes++;
-            }
-        }
-
-        if (trackedPlanes == 0) {
-            messageSnackbarHelper.showMessage(this,
-                    "Still looking for surfaces… move slowly; aim at textured, well-lit areas.");
-        } else {
-            messageSnackbarHelper.showMessage(this,
-                    "Surface found ✓ — tap on the grid/points to place an egg.");
-        }
-        coachLastHintMs = now;
-    }
 
     private void ensureStatusShownNoReset() {
         statusDlg = CenterStatusDialogFragment.showOnce(
@@ -1881,6 +2213,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private void uiShowProgress(String title, String line1, @Nullable String line2) {
+        if (!SHOW_GUIDANCE) return;
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
             ensureStatusShownNoReset();
@@ -1889,17 +2222,27 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private void uiShowMessage(String title, String message, boolean okButton) {
+        if (!SHOW_GUIDANCE) return;
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
-            boolean endOfFlow = title != null && (title.startsWith("All set") || title.startsWith("Not hosted") || title.startsWith("Hosting failed") || title.startsWith("Ready") || title.startsWith("Saved (geospatial)") || title.startsWith("Save (geospatial) failed") || title.startsWith("Need location"));
+            boolean endOfFlow = title != null && (title.startsWith("All set") || title.startsWith("Not hosted")
+                    || title.startsWith("Hosting failed") || title.startsWith("Ready")
+                    || title.startsWith("Saved (geospatial)") || title.startsWith("Save (geospatial) failed")
+                    || title.startsWith("Need location"));
             if (endOfFlow) ensureStatusShownAndRearm();
             else ensureStatusShownNoReset();
-
             if (statusDlg != null) statusDlg.showMessage(title, message, okButton);
         });
     }
 
-    private void uiHideStatus() { runOnUiThread(this::hideStatus); }
+    private void uiHideStatus() {
+        if (!SHOW_GUIDANCE) return;
+        runOnUiThread(this::hideStatus);
+    }
+
+    private void showPlacementCoachDialog() { if (!SHOW_GUIDANCE) return; }
+
+    private void maybeShowScanHints(Frame frame, Camera camera) { if (!SHOW_GUIDANCE) return; }
 
     private void hideStatus() {
         if (statusDlg != null) try { statusDlg.dismissAllowingStateLoss(); } catch (Throwable ignore) {}
@@ -1968,6 +2311,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void mountPreviousEggsFromSnapshot(Earth earth, GeospatialPose camGp, List<DocumentSnapshot> docs, boolean cellFiltered) {
         int added = 0;
         final long grace = System.currentTimeMillis() + 2500L;
+
         for (DocumentSnapshot snap : docs) {
             if (mountedPrevDocIds.contains(snap.getId())) continue;
 
@@ -1979,7 +2323,21 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Double heading = snap.getDouble("heading");
             if (heading == null) heading = 0.0;
 
+            // Compute desired rotation: prefer saved localQ*, else fall back to yaw * MODEL_UPRIGHT_FIX
+            Float lqx = (snap.getDouble("localQx") != null) ? snap.getDouble("localQx").floatValue() : null;
+            Float lqy = (snap.getDouble("localQy") != null) ? snap.getDouble("localQy").floatValue() : null;
+            Float lqz = (snap.getDouble("localQz") != null) ? snap.getDouble("localQz").floatValue() : null;
+            Float lqw = (snap.getDouble("localQw") != null) ? snap.getDouble("localQw").floatValue() : null;
+
+            float[] q;
+            if (lqx != null && lqy != null && lqz != null && lqw != null) {
+                q = new float[]{ lqx, lqy, lqz, lqw };
+            } else {
+                q = quatMul(yawToQuaternion(heading.floatValue()), MODEL_UPRIGHT_FIX);
+            }
+
             if (lat == null || lng == null) {
+                // Cloud-only fallback
                 if (cloudId != null && !cloudId.isEmpty()) {
                     try {
                         Anchor a = session.resolveCloudAnchor(cloudId);
@@ -1993,32 +2351,35 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 continue;
             }
 
+            // Don’t mount a star right on top of the camera’s current spot
             if (isWithinMeters(camGp.getLatitude(), camGp.getLongitude(), lat, lng, MIN_LOAD_METERS)) {
                 continue;
             }
 
             try {
-                // NEW: Prefer GEO for "GEO" and "GEO+CLOUD"; only use cloud when type == "CLOUD"
+                // Prefer GEO for "GEO" / "GEO+CLOUD"; only resolve cloud when "CLOUD"
                 boolean wantsCloudOnly = (cloudId != null && !cloudId.isEmpty()) &&
                         (type != null && type.equalsIgnoreCase("CLOUD"));
                 boolean wantsGeo = (type != null && (type.equalsIgnoreCase("GEO") || type.equalsIgnoreCase("GEO+CLOUD")));
 
                 if (wantsGeo && alt != null) {
-                    float[] q = yawToQuaternion(heading.floatValue());
+                    // Create a GEO anchor with the desired rotation
                     Anchor a = earth.createAnchor(lat, lng, alt, q[0], q[1], q[2], q[3]);
                     prevAnchors.add(new WrappedAnchor(a, null, snap.getId(), grace));
                     mountedPrevDocIds.add(snap.getId());
                     added++;
                 } else if (wantsGeo) {
+                    // Try terrain with the same rotation (use cam altitude as approx if needed)
+                    final float approxAlt = (float) (alt != null ? alt : camGp.getAltitude());
                     earth.resolveAnchorOnTerrainAsync(
-                            lat, lng, /*approxAlt*/ (float)(alt != null ? alt : camGp.getAltitude()),
-                            0,0,0,1,
+                            lat, lng, approxAlt, q[0], q[1], q[2], q[3],
                             (terrainAnchor, state) -> {
                                 if (state == Anchor.TerrainAnchorState.SUCCESS) {
                                     try {
-                                        prevAnchors.add(new WrappedAnchor(terrainAnchor, null, snap.getId(), System.currentTimeMillis()+2500L));
+                                        prevAnchors.add(new WrappedAnchor(terrainAnchor, null, snap.getId(),
+                                                System.currentTimeMillis() + 2500L));
                                         mountedPrevDocIds.add(snap.getId());
-                                    } catch (Throwable ignore) {}
+                                    } catch (Throwable ignore) { }
                                 } else {
                                     if (terrainAnchor != null) terrainAnchor.detach();
                                 }
@@ -2029,16 +2390,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     mountedPrevDocIds.add(snap.getId());
                     added++;
                 } else {
-                    // Fallback: try terrain if nothing else matches
+                    // Generic fallback: try terrain with our rotation
+                    final float approxAlt = (float) (alt != null ? alt : camGp.getAltitude());
                     earth.resolveAnchorOnTerrainAsync(
-                            lat, lng, /*approxAlt*/ (float)(alt != null ? alt : camGp.getAltitude()),
-                            0,0,0,1,
+                            lat, lng, approxAlt, q[0], q[1], q[2], q[3],
                             (terrainAnchor, state) -> {
                                 if (state == Anchor.TerrainAnchorState.SUCCESS) {
                                     try {
-                                        prevAnchors.add(new WrappedAnchor(terrainAnchor, null, snap.getId(), System.currentTimeMillis()+2500L));
+                                        prevAnchors.add(new WrappedAnchor(terrainAnchor, null, snap.getId(),
+                                                System.currentTimeMillis() + 2500L));
                                         mountedPrevDocIds.add(snap.getId());
-                                    } catch (Throwable ignore) {}
+                                    } catch (Throwable ignore) { }
                                 } else {
                                     if (terrainAnchor != null) terrainAnchor.detach();
                                 }
@@ -2048,11 +2410,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 Log.w(TAG, "Failed to mount previous egg " + snap.getId(), t);
             }
         }
-        if (added > 0) {
+
+        if (SHOW_LOAD_TOAST && added > 0) {
             final int addedCount = added;
             runOnUiThread(() ->
                     Toast.makeText(HelloArActivity.this,
-                            "Loaded " + addedCount + " nearby egg(s).",
+                            "Loaded " + addedCount + " nearby star(s).",
                             Toast.LENGTH_SHORT).show());
         }
 

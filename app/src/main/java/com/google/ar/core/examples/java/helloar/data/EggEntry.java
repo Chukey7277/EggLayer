@@ -42,10 +42,10 @@ public class EggEntry {
     /** Cloud Anchor ID (present iff anchorType == "CLOUD"). */
     public @Nullable String cloudId;
     /** Days to live used when hosting. */
-    public @Nullable Long cloudTtlDays;        // keep as Long for Firestore consistency
+    public @Nullable Long      cloudTtlDays;        // keep as Long for Firestore consistency
     public @Nullable Timestamp cloudHostedAt;
-    public @Nullable String cloudStatus;       // HOSTING, SUCCESS, ERROR, NO_HOSTABLE_ANCHOR
-    public @Nullable String cloudError;
+    public @Nullable String    cloudStatus;         // HOSTING, SUCCESS, ERROR, NO_HOSTABLE_ANCHOR
+    public @Nullable String    cloudError;
 
     // ---------- Media ----------
     /** Storage paths (e.g., "eggs/{docId}/photos/photo_0.jpg") or absolute URLs. */
@@ -68,7 +68,14 @@ public class EggEntry {
     public @Nullable List<String> collectedBy;
 
     // ---------- Placement metadata ----------
+    /** Legacy single string for a reference image (kept for back-compat). */
     public @Nullable String refImage;
+
+    /** Where the star should really be placed (author hinting for SpotAR). */
+    public @Nullable Integer refPhotoIndex;    // 0-based index into photoPaths
+    public @Nullable String  refCaption;       // short caption to guide placement
+    public @Nullable String  refHints;         // longer freeform hints/instructions
+
     public @Nullable String placementType;     // "DepthPoint", "Point", "Plane", …
     public @Nullable Float  distanceFromCamera;
 
@@ -110,6 +117,32 @@ public class EggEntry {
                 }
                 if (!p.isEmpty()) return p;
             }
+        }
+        return null;
+    }
+
+    /** Reference image to guide correction in SpotAR: refPhotoIndex → photoPaths, else refImage, else null. */
+    @Nullable
+    public String referenceImageOrUrl() {
+        if (refPhotoIndex != null && photoPaths != null) {
+            int i = refPhotoIndex;
+            if (i >= 0 && i < photoPaths.size()) {
+                String p = photoPaths.get(i);
+                if (p != null) {
+                    p = p.trim();
+                    if (!p.startsWith("http") && !p.startsWith("gs://") && p.startsWith("/")) {
+                        p = p.substring(1);
+                    }
+                    if (!p.isEmpty()) return p;
+                }
+            }
+        }
+        if (refImage != null && !refImage.trim().isEmpty()) {
+            String p = refImage.trim();
+            if (!p.startsWith("http") && !p.startsWith("gs://") && p.startsWith("/")) {
+                p = p.substring(1);
+            }
+            return p.isEmpty() ? null : p;
         }
         return null;
     }

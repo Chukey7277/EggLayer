@@ -4,6 +4,7 @@
     android:id="@+id/root"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
+    android:fitsSystemWindows="true"
     tools:context="com.google.ar.core.examples.java.helloar.HelloArActivity">
 
   <!-- Camera / AR surface -->
@@ -12,7 +13,8 @@
       android:layout_width="match_parent"
       android:layout_height="match_parent"
       android:layout_alignParentTop="true"
-      android:layout_alignParentStart="true" />
+      android:layout_alignParentStart="true"
+      android:keepScreenOn="true" />
 
   <!-- Small HUD (top-left) -->
   <LinearLayout
@@ -41,15 +43,15 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="LAT/LNG: —"
-        android:textColor="#FFFFFF"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tvLatLngAcc"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="ACCURACY: —"
-        android:textColor="#FFFFFF"
+        android:text="H-Accuracy: —"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
 
     <TextView
@@ -57,15 +59,15 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="ALTITUDE: —"
-        android:textColor="#FFFFFF"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tvAltAcc"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="ACCURACY: —"
-        android:textColor="#FFFFFF"
+        android:text="V-Accuracy: —"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
 
     <TextView
@@ -73,15 +75,15 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="HEADING: —"
-        android:textColor="#FFFFFF"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
 
     <TextView
         android:id="@+id/tvHeadingAcc"
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:text="ACCURACY: —"
-        android:textColor="#FFFFFF"
+        android:text="Heading accuracy: —"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
 
     <TextView
@@ -89,11 +91,11 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:text="Anchor: none"
-        android:textColor="#FFFFFF"
+        android:textColor="@android:color/white"
         android:textSize="12sp" />
   </LinearLayout>
 
-  <!-- Ray distance controls (top-right) - vertical, 56dp min touch size -->
+  <!-- Ray distance controls (top-right) -->
   <LinearLayout
       android:id="@+id/rayControlsContainer"
       android:layout_width="wrap_content"
@@ -105,17 +107,16 @@
       android:background="#66000000"
       android:orientation="vertical"
       android:padding="8dp"
-      android:visibility="visible"
+      android:visibility="gone"
       android:elevation="8dp">
 
     <Button
         android:id="@+id/btnRayPlus"
-        android:layout_width="52dp"
-        android:layout_height="52dp"
-        android:minWidth="56dp"
-        android:minHeight="56dp"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
         android:text="+"
-        android:textSize="22sp" />
+        android:textSize="22sp"
+        android:contentDescription="Increase distance" />
 
     <View
         android:layout_width="0dp"
@@ -123,12 +124,11 @@
 
     <Button
         android:id="@+id/btnRayMinus"
-        android:layout_width="52dp"
-        android:layout_height="52dp"
-        android:minWidth="56dp"
-        android:minHeight="56dp"
+        android:layout_width="56dp"
+        android:layout_height="56dp"
         android:text="−"
-        android:textSize="22sp" />
+        android:textSize="22sp"
+        android:contentDescription="Decrease distance" />
   </LinearLayout>
 
   <!-- Bottom info card -->
@@ -138,7 +138,7 @@
       android:layout_height="wrap_content"
       android:layout_alignParentBottom="true"
       android:background="#AA000000"
-      android:textColor="#FFFFFF"
+      android:textColor="@android:color/white"
       android:padding="12dp"
       android:textSize="14sp"
       android:visibility="gone"

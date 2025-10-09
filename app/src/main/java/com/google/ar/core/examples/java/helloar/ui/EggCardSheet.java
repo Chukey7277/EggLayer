@@ -7,7 +7,9 @@ import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.graphics.Color;
 import android.graphics.Rect;
+import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -56,14 +58,9 @@ import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.firestore.FieldValue;
 import com.google.firebase.firestore.FirebaseFirestore;
-import com.google.firebase.firestore.ListenerRegistration;
 
 import com.bumptech.glide.load.engine.DiskCacheStrategy;
 import com.bumptech.glide.request.RequestOptions;
-
-
-
-
 
 /** Bottom sheet to capture egg details + photos (no transcript / audio-note). */
 public class EggCardSheet extends BottomSheetDialogFragment {
@@ -91,13 +88,16 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         }
     }
 
-    // Keep the same listener signature so the rest of your app doesn’t change.
+    // Listener now includes optional reference metadata.
     public interface Listener {
         void onSave(String title,
                     String description,
                     List<Uri> photoUris,
-                    @Nullable Uri audioUri, // we will send null now
-                    @Nullable GeoPoseSnapshot geoPose);
+                    @Nullable Uri audioUri, // still null
+                    @Nullable GeoPoseSnapshot geoPose,
+                    @Nullable String refCaption,
+                    @Nullable String refHints,
+                    @Nullable Integer refPhotoIndex);
         void onCancel();
     }
 
@@ -116,9 +116,29 @@ public class EggCardSheet extends BottomSheetDialogFragment {
     private LinearLayout mediaPreviewContainer;
     private View photoStrip;
 
+    // NEW: optional metadata for reference photo
+    private TextInputLayout refCaptionLayout, refHintsLayout;
+    private TextInputEditText refCaptionInput, refHintsInput;
+
     // ---------- Photos ----------
     private final ArrayList<Uri> pickedPhotoUris = new ArrayList<>();
     private @Nullable Uri cameraTempPhotoUri = null;
+
+    // Require at least one "reference photo" (set by container when no hostable surface)
+    private boolean requireReferencePhoto = false;
+    /** -1 => auto first; else explicit selected ref index */
+    private int referenceIndex = -1;
+
+    /** MarkAR sets this depending on whether a hostable surface exists */
+    public void setRequireReferencePhoto(boolean require) { this.requireReferencePhoto = require; }
+    /** Returns the chosen reference photo Uri (first if none explicitly chosen). */
+    @Nullable public Uri getReferencePhotoUriOrNull() {
+        if (pickedPhotoUris.isEmpty()) return null;
+        int idx = (referenceIndex >= 0 && referenceIndex < pickedPhotoUris.size()) ? referenceIndex : 0;
+        return pickedPhotoUris.get(idx);
+    }
+    public String getReferenceCaption() { return safeText(refCaptionInput); }
+    public String getReferenceHints()   { return safeText(refHintsInput); }
 
     // ---------- STT: tap (one-shot) + hold (live) ----------
     private @Nullable SpeechRecognizer speechRecognizer = null;
@@ -141,10 +161,7 @@ public class EggCardSheet extends BottomSheetDialogFragment {
     private boolean interceptingParents = false;
     private int touchSlopPx = 16;
 
-
     @Nullable private com.google.firebase.firestore.ListenerRegistration quizReg;
-
-
 
     // Timer shown as helper text on the active TextInputLayout
     private long timerStartedAt = 0L;
@@ -196,6 +213,12 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         cancelBtn = root.findViewById(R.id.cancelBtn);
         saveBtn   = root.findViewById(R.id.saveBtn);
 
+        // NEW: optional reference metadata inputs (add these IDs to your layout)
+        refCaptionLayout = root.findViewById(R.id.refCaptionLayout);
+        refHintsLayout   = root.findViewById(R.id.refHintsLayout);
+        refCaptionInput  = root.findViewById(R.id.refCaptionInput);
+        refHintsInput    = root.findViewById(R.id.refHintsInput);
+
         touchSlopPx = ViewConfiguration.get(requireContext()).getScaledTouchSlop();
 
         // Wire the small side-mics (tap = one-shot; hold = live)
@@ -204,53 +227,68 @@ public class EggCardSheet extends BottomSheetDialogFragment {
 
         addPhotosBtn.setOnClickListener(v -> showPhotoOptions());
         cancelBtn.setOnClickListener(v -> { if (listener != null) listener.onCancel(); dismissAllowingStateLoss(); });
+
+        // Toggle reference metadata visibility
+        if (refCaptionLayout != null && refHintsLayout != null) {
+            if (requireReferencePhoto) {
+                refCaptionLayout.setVisibility(View.VISIBLE);
+                refHintsLayout.setVisibility(View.VISIBLE);
+            } else {
+                refCaptionLayout.setVisibility(View.GONE);
+                refHintsLayout.setVisibility(View.GONE);
+            }
+        }
+
         saveBtn.setOnClickListener(v -> {
             String title = safeText(titleInput);
             String desc  = safeText(descInput);
 
-//            // (Optional) keep existing callback for your app logic
-//            if (listener != null) {
-//                listener.onSave(title, desc, /*transcript*/"", new ArrayList<>(pickedPhotoUris), /*audio*/null, geoPoseSnapshot);
-//            }
-            // Clear any previous error
             titleLayout.setError(null);
             descLayout.setError(null);
 
             boolean hasError = false;
-
-            if (title.isEmpty()) {
-                titleLayout.setError("Title is required");
-                titleInput.requestFocus();
-                hasError = true;
-            }
-
-            if (desc.isEmpty()) {
-                descLayout.setError("Description is required");
-                if (!hasError) { // Focus description only if title valid
-                    descInput.requestFocus();
-                }
-                hasError = true;
-            }
-
+            if (title.isEmpty()) { titleLayout.setError("Title is required"); titleInput.requestFocus(); hasError = true; }
+            if (desc.isEmpty())  { descLayout.setError("Description is required"); if (!hasError) descInput.requestFocus(); hasError = true; }
             if (hasError) return;
 
+            // Enforce reference photo when requested
+            if (requireReferencePhoto && pickedPhotoUris.isEmpty()) {
+                Toast.makeText(requireContext(),
+                        "Add a reference photo (we couldn’t lock to a surface).",
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            // Ensure reference photo is first (so uploaders can treat index 0 as REF)
+            if (!pickedPhotoUris.isEmpty()) {
+                int idx = (referenceIndex >= 0 && referenceIndex < pickedPhotoUris.size()) ? referenceIndex : 0;
+                if (idx > 0) {
+                    Uri ref = pickedPhotoUris.remove(idx);
+                    pickedPhotoUris.add(0, ref);
+                    referenceIndex = 0;
+                }
+            }
+
             if (listener != null) {
+                // Compute a safe ref index (null if no photos)
+                final Integer refIndex =
+                        pickedPhotoUris.isEmpty() ? null :
+                                ((referenceIndex >= 0 && referenceIndex < pickedPhotoUris.size())
+                                        ? referenceIndex : 0);
+
                 listener.onSave(
                         title,
                         desc,
                         new ArrayList<>(pickedPhotoUris),
                         /* audio */ null,
-                        geoPoseSnapshot
+                        geoPoseSnapshot,
+                        safeText(refCaptionInput),
+                        safeText(refHintsInput),
+                        refIndex
                 );
             }
-
-            // Kick off quiz generation via Firestore
-//            requestQuizGeneration(title, desc);
-
-            // You can dismiss here or after the quiz arrives; up to you.
             dismissAllowingStateLoss();
         });
-
 
         initSpeechRecognizer();
         refreshPhotoUI();
@@ -267,78 +305,75 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         }
     }
 
-
     // --------------------------- WIRING (tap + hold) ---------------------------
     private void wireFieldMic(TextInputLayout layout, TextInputEditText input, VoiceTarget target) {
         layout.post(() -> {
-            View endIcon = layout.findViewById(com.google.android.material.R.id.text_input_end_icon);
+            // Resolve the end icon view without referencing com.google.android.material.R
+            int endIconId = layout.getResources()
+                    .getIdentifier("text_input_end_icon", "id", "com.google.android.material");
+            final View endIcon = endIconId != 0 ? layout.findViewById(endIconId) : null;
 
-            // Always wire tap for one-shot STT (reliable across OEMs).
+            // Tap = one-shot STT
             layout.setEndIconOnClickListener(v -> startTapSTT(target));
 
-            if (endIcon == null) return; // tap already wired above
-
-            // Long-press to start live dictation (simpler & more reliable than custom threshold).
+            // Long-press = live dictation (works even if we couldn't grab endIcon)
             layout.setEndIconOnLongClickListener(v -> {
                 if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
                         != PackageManager.PERMISSION_GRANTED) {
                     requestMicPermission.launch(Manifest.permission.RECORD_AUDIO);
                     return true;
                 }
-                // Prep state for hold session
-                v.getGlobalVisibleRect(holdBounds);
-                int margin = (int) dp(96);
-                holdBounds.inset(-margin, -margin);
+
+                if (endIcon != null) {
+                    endIcon.getGlobalVisibleRect(holdBounds);
+                    int margin = (int) dp(96);
+                    holdBounds.inset(-margin, -margin);
+                }
                 outOfBounds = false;
                 baseTextBeforeHold = safeText(input);
-                committedTextDuringHold = baseTextBeforeHold; // accumulate from baseline
+                committedTextDuringHold = baseTextBeforeHold;
 
-                setParentsDisallowIntercept(v, true); // avoid parent scroll eating events
+                setParentsDisallowIntercept(v, true);
                 beginLiveFor(target, input);
                 return true;
             });
 
-            // OnTouch now only handles drag-to-cancel and release; it no longer starts the session.
-            endIcon.setOnTouchListener((v, ev) -> {
-                switch (ev.getActionMasked()) {
-                    case MotionEvent.ACTION_MOVE: {
-                        if (currentHoldTarget != null) {
-                            boolean inside = holdBounds.contains((int) ev.getRawX(), (int) ev.getRawY());
-                            if (!inside && !outOfBounds) {
-                                outOfBounds = true;
-                                holdHandler.postDelayed(() -> {
-                                    if (outOfBounds && currentHoldTarget != null) {
-                                        stopLiveIfNeeded(true);
-                                        Toast.makeText(requireContext(), "Cancelled", Toast.LENGTH_SHORT).show();
-                                    }
-                                }, 250);
-                            } else if (inside && outOfBounds) {
-                                outOfBounds = false;
-                                holdHandler.removeCallbacksAndMessages(null);
+            // Drag-to-cancel only if we actually found the end icon view
+            if (endIcon != null) {
+                endIcon.setOnTouchListener((v, ev) -> {
+                    switch (ev.getActionMasked()) {
+                        case MotionEvent.ACTION_MOVE: {
+                            if (currentHoldTarget != null) {
+                                boolean inside = holdBounds.contains((int) ev.getRawX(), (int) ev.getRawY());
+                                if (!inside && !outOfBounds) {
+                                    outOfBounds = true;
+                                    holdHandler.postDelayed(() -> {
+                                        if (outOfBounds && currentHoldTarget != null) {
+                                            stopLiveIfNeeded(true);
+                                            Toast.makeText(requireContext(), "Cancelled", Toast.LENGTH_SHORT).show();
+                                        }
+                                    }, 250);
+                                } else if (inside && outOfBounds) {
+                                    outOfBounds = false;
+                                    holdHandler.removeCallbacksAndMessages(null);
+                                }
                             }
+                            break;
                         }
-                        return false; // allow click/long-click detection
-                    }
-                    case MotionEvent.ACTION_UP: {
-                        holdHandler.removeCallbacksAndMessages(null);
-                        if (currentHoldTarget != null) {
-                            boolean inside = holdBounds.contains((int) ev.getRawX(), (int) ev.getRawY());
-                            stopLiveIfNeeded(!inside);
-                            setParentsDisallowIntercept(v, false);
+                        case MotionEvent.ACTION_UP:
+                        case MotionEvent.ACTION_CANCEL: {
+                            holdHandler.removeCallbacksAndMessages(null);
+                            if (currentHoldTarget != null) {
+                                boolean insideUp = holdBounds.contains((int) ev.getRawX(), (int) ev.getRawY());
+                                stopLiveIfNeeded(!insideUp);
+                                setParentsDisallowIntercept(v, false);
+                            }
+                            break;
                         }
-                        return false; // let click fire if no hold occurred
                     }
-                    case MotionEvent.ACTION_CANCEL: {
-                        holdHandler.removeCallbacksAndMessages(null);
-                        if (currentHoldTarget != null) {
-                            stopLiveIfNeeded(true);
-                            setParentsDisallowIntercept(v, false);
-                        }
-                        return false;
-                    }
-                }
-                return false;
-            });
+                    return false;
+                });
+            }
         });
     }
 
@@ -346,12 +381,11 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         FirebaseFirestore db = FirebaseFirestore.getInstance();
         FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
 
-        // Write a new request doc
         java.util.Map<String, Object> req = new java.util.HashMap<>();
         req.put("uid", user != null ? user.getUid() : "anon");
         req.put("title", title);
         req.put("description", description);
-        req.put("model", "gemini-2.5-flash");   // same as your Function
+        req.put("model", "gemini-2.5-flash");
         req.put("status", "pending");
         req.put("createdAt", FieldValue.serverTimestamp());
 
@@ -359,21 +393,13 @@ public class EggCardSheet extends BottomSheetDialogFragment {
 
         db.collection("quizRequests").add(req)
                 .addOnSuccessListener(ref -> {
-                    // Listen for the Cloud Function to write back the result
                     if (quizReg != null) { quizReg.remove(); }
                     quizReg = ref.addSnapshotListener((snap, e) -> {
                         if (e != null || snap == null || !snap.exists()) return;
                         String status = snap.getString("status");
                         if ("complete".equals(status)) {
-                            // Quiz JSON is in the "quiz" field
                             Object quizObj = snap.get("quiz");
                             Toast.makeText(requireContext(), "Quiz ready!", Toast.LENGTH_SHORT).show();
-
-                            // TODO: navigate to your Quiz screen / render dialog / etc.
-                            // Example: pass `quizObj` to your activity via a callback
-                            // or store it where your UI can pick it up.
-
-                            // Stop listening once done
                             if (quizReg != null) { quizReg.remove(); quizReg = null; }
                         } else if ("error".equals(status)) {
                             String msg = snap.getString("error");
@@ -387,8 +413,6 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                 );
     }
 
-
-
     private void startTapSTT(VoiceTarget target) {
         if (ContextCompat.checkSelfPermission(requireContext(), Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED) {
@@ -401,7 +425,6 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         i.putExtra(RecognizerIntent.EXTRA_PROMPT,
                 target == VoiceTarget.TITLE ? "Speak the title" : "Speak the description");
         try {
-            // Remember the target locally; do not rely on round-tripping custom extras.
             pendingTapTarget = target;
             sttLauncher.launch(i);
         } catch (ActivityNotFoundException e) {
@@ -430,7 +453,6 @@ public class EggCardSheet extends BottomSheetDialogFragment {
     private void stopLiveIfNeeded(boolean cancel) {
         if (currentHoldTarget == null) return;
 
-        // Stop recognizer
         try {
             if (speechRecognizer != null) {
                 if (cancel) speechRecognizer.cancel(); else speechRecognizer.stopListening();
@@ -438,11 +460,9 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         } catch (Exception ignored) {}
         recognizerActive = false;
 
-        // UI reset
         uiHandler.removeCallbacks(timerTick);
         getLayoutForTarget(currentHoldTarget).setHelperText(null);
 
-        // If cancelled, revert to text before hold
         if (cancel && currentHoldInput != null) {
             currentHoldInput.setText(baseTextBeforeHold);
             if (currentHoldInput.getText() != null)
@@ -470,7 +490,6 @@ public class EggCardSheet extends BottomSheetDialogFragment {
 
             @Override public void onError(int error) {
                 recognizerActive = false;
-                // restart while still holding
                 if (currentHoldTarget != null) uiHandler.postDelayed(EggCardSheet.this::startLiveRecognition, 200);
             }
 
@@ -481,10 +500,9 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                             : committedTextDuringHold + " " + list.get(0);
                     currentHoldInput.setText(out);
                     currentHoldInput.setSelection(out.length());
-                    committedTextDuringHold = out; // accumulate across bursts
+                    committedTextDuringHold = out;
                 }
                 recognizerActive = false;
-                // keep going while holding (continues dictation)
                 if (currentHoldTarget != null) startLiveRecognition();
             }
 
@@ -588,7 +606,7 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                         descInput.setText(merged);
                         descInput.setSelection(merged.length());
                     }
-                    pendingTapTarget = null; // clear after use
+                    pendingTapTarget = null;
                 }
         );
     }
@@ -643,9 +661,8 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                 return;
             }
         }
-        pickFromGalleryNow(); // launches GetMultipleContents("image/*")
+        pickFromGalleryNow();
     }
-
 
     private void pickFromGalleryNow() {
         pickMultipleImagesLauncher.launch("image/*");
@@ -657,34 +674,69 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         photoStrip.setVisibility(hasPhotos ? View.VISIBLE : View.GONE);
 
         if (hasPhotos) {
-            photoHint.setText(pickedPhotoUris.size() + " selected • Add more");
+            photoHint.setText(pickedPhotoUris.size() + " selected • " +
+                    (requireReferencePhoto ? "Tap to mark “REF”" : "Add more"));
             addPhotosBtn.setText("Add more");
         } else {
-            photoHint.setText("Take a photo or pick up to 5");
+            photoHint.setText(requireReferencePhoto
+                    ? "Required: add at least one photo of the exact spot"
+                    : "Take a photo or pick up to 5");
             addPhotosBtn.setText("Add photos");
         }
 
         mediaPreviewContainer.removeAllViews();
         final int size = (int) dp(64);
         final int pad  = (int) dp(6);
-        for (Uri u : pickedPhotoUris) {
-            ImageView iv = new ImageView(requireContext());
+
+        int chosen = (referenceIndex >= 0 && referenceIndex < pickedPhotoUris.size()) ? referenceIndex : 0;
+
+        for (int i = 0; i < pickedPhotoUris.size(); i++) {
+            final int pos = i;
+            Uri u = pickedPhotoUris.get(i);
+
+            // Wrapper to overlay badge + ring
+            android.widget.FrameLayout frame = new android.widget.FrameLayout(requireContext());
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(size, size);
             lp.setMargins(pad, pad, pad, pad);
-            iv.setLayoutParams(lp);
-            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
-            iv.setClipToOutline(true);
+            frame.setLayoutParams(lp);
+            frame.setClipToPadding(true);
 
-            // Use Glide – handles all sorts of content:// and file:// Uris
+            ImageView iv = new ImageView(requireContext());
+            iv.setLayoutParams(new android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
             com.bumptech.glide.Glide.with(this)
                     .load(u)
                     .placeholder(android.R.drawable.ic_menu_report_image)
                     .error(android.R.drawable.ic_menu_report_image)
                     .into(iv);
+            frame.addView(iv);
 
-            mediaPreviewContainer.addView(iv);
+            // REF badge
+            TextView badge = new TextView(requireContext());
+            badge.setText("REF");
+            badge.setPadding((int)dp(4),(int)dp(2),(int)dp(4),(int)dp(2));
+            badge.setTextSize(10);
+            badge.setTextColor(Color.WHITE);
+            badge.setBackground(createRefBadgeBackground());
+            android.widget.FrameLayout.LayoutParams blp = new android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            blp.leftMargin = (int) dp(4);
+            blp.topMargin  = (int) dp(4);
+            badge.setLayoutParams(blp);
+            badge.setVisibility(pos == chosen ? View.VISIBLE : View.GONE);
+            frame.addView(badge);
+
+            // Selection ring
+            frame.setForeground(pos == chosen ? createSelectedRingDrawable() : null);
+
+            frame.setOnClickListener(v -> {
+                referenceIndex = pos;
+                refreshPhotoUI();
+            });
+
+            mediaPreviewContainer.addView(frame);
         }
-
     }
 
     // --------------------------- Utils ---------------------------
@@ -714,5 +766,22 @@ public class EggCardSheet extends BottomSheetDialogFragment {
             p = p.getParent();
         }
         interceptingParents = disallow;
+    }
+
+    private GradientDrawable createRefBadgeBackground() {
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.RECTANGLE);
+        g.setCornerRadius(dp(8));
+        g.setColor(0x99000000); // translucent black
+        return g;
+    }
+
+    private GradientDrawable createSelectedRingDrawable() {
+        GradientDrawable g = new GradientDrawable();
+        g.setShape(GradientDrawable.RECTANGLE);
+        g.setCornerRadius(dp(8));
+        g.setStroke((int) dp(2), Color.parseColor("#4CAF50")); // green ring
+        g.setColor(Color.TRANSPARENT);
+        return g;
     }
 }

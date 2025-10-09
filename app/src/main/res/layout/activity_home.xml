@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <RelativeLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/blue_lightest"
-    android:padding="24dp">
+    android:padding="24dp"
+    tools:context=".HomeActivity">
 
     <TextView
         android:id="@+id/welcomeText"
@@ -27,8 +29,11 @@
         android:layout_height="wrap_content"
         android:layout_below="@id/welcomeText"
         android:layout_marginTop="48dp"
-        android:layout_marginHorizontal="16dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
         app:cardCornerRadius="16dp"
+        app:cardUseCompatPadding="true"
+        app:cardPreventCornerOverlap="true"
         app:cardElevation="8dp"
         app:cardBackgroundColor="@color/white">
 
@@ -40,8 +45,11 @@
             android:fontFamily="sans-serif"
             android:letterSpacing="0.02"
             android:lineSpacingExtra="12dp"
-            android:padding="24dp"
-            android:text="1. Point your camera at the ground\n2. Let Earth Tracking turn green\n3. Tap to place your EGG\n4. Add description, phots and audio to your egg\n4. Save your egg:)"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:paddingTop="24dp"
+            android:paddingBottom="24dp"
+            android:text="1. Point your camera at the ground\n2. Wait for Earth tracking to turn green\n3. Tap to place your star\n4. Add description and photos\n5. Save your star 🙂"
             android:textColor="@color/blue_text_primary"
             android:textSize="16sp" />
     </androidx.cardview.widget.CardView>
@@ -53,16 +61,18 @@
         android:layout_below="@id/instructionsCard"
         android:layout_centerHorizontal="true"
         android:layout_marginTop="80dp"
-        android:text="Start Placing Eggs"
+        android:text="Start Placing"
         android:textSize="16sp"
         android:fontFamily="sans-serif-medium"
         android:letterSpacing="0.02"
-        android:paddingHorizontal="40dp"
-        android:paddingVertical="16dp"
+        android:paddingStart="40dp"
+        android:paddingEnd="40dp"
+        android:paddingTop="16dp"
+        android:paddingBottom="16dp"
         android:textColor="@color/blue_text_primary"
+        android:elevation="8dp"
         app:backgroundTint="@color/blue_light"
-        app:cornerRadius="28dp"
-        app:elevation="8dp" />
+        app:cornerRadius="28dp" />
 
     <com.google.android.material.button.MaterialButton
         android:id="@+id/collectibles_button"
@@ -73,19 +83,20 @@
         android:layout_marginTop="24dp"
         android:text="View Collectibles"
         android:textColor="@color/blue_text_primary"
+        android:elevation="8dp"
         app:backgroundTint="@color/blue_light"
         app:cornerRadius="28dp"
-        app:elevation="8dp"
-        android:visibility="gone"/>
-    <!-- Inside activity_home.xml root -->
+        android:visibility="gone" />
+
     <TextView
         android:id="@+id/homeHintText"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
+        android:layout_below="@id/collectibles_button"
+        android:layout_marginTop="16dp"
         android:textSize="14sp"
-        android:padding="16dp" />
-
-
-
+        android:textColor="@color/blue_text_primary"
+        android:padding="16dp"
+        tools:text="Tip: you can always view your saved stars from the menu." />
 
 </RelativeLayout>

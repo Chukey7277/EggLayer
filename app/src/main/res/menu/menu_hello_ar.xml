@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<menu xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <item android:id="@+id/action_start_placement"
+        android:title="Start placement"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_depth"
+        android:title="Depth and occlusion…"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_env_auto"
+        android:title="Auto indoor/outdoor"
+        android:checkable="true"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_env_indoor"
+        android:title="Force INDOOR"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_env_outdoor"
+        android:title="Force OUTDOOR"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_reset_tips"
+        android:title="Show placement tips"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_zoom_reset"
+        android:title="Reset zoom"
+        app:showAsAction="never" />
+
+    <item android:id="@+id/action_clear"
+        android:title="Clear anchors (local view)"
+        app:showAsAction="never" />
+</menu>

@@ -45,9 +45,9 @@
         android:value="required" />
 
     <!-- ✅ Geospatial  -->
-    <meta-data
-        android:name="com.google.android.ar.API_KEY"
-        android:value="@string/arcore_api_key" />
+<!--    <meta-data-->
+<!--        android:name="com.google.android.ar.API_KEY"-->
+<!--        android:value="@string/arcore_api_key" />-->
 
     <!-- Single launcher: SplashActivity -->
     <activity
