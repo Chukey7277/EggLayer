@@ -281,9 +281,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // turn on to lock the star's orientation everywhere
     private static final boolean ALWAYS_FACE_CAMERA = true;
-    // Turn ALL “guidance” UI off
-    private static final boolean SHOW_GUIDANCE = false;     // overlays, snackbars
-    private static final boolean SHOW_HINT_TOASTS = false;  // little Toast hints
 
     // If you prefer a single global orientation (not facing camera), use this instead:
     private static final float[] FIXED_WORLD_Q = quatMul(yawToQuaternion(0f), MODEL_UPRIGHT_FIX);
@@ -1401,7 +1398,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             sheet.setListener(new EggCardSheet.Listener() {
                 @Override
                 public void onSave(String title, String description, List<Uri> photoUris, @Nullable Uri audioUri,
-                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot,@Nullable String refCaption, @Nullable String refHints, @Nullable Integer refPhotoIndex) {
+                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
                     rayAdjustActive = false;
                     setRayControlsVisible(false);
                     rayForcedYawDeg = null;
@@ -1532,13 +1529,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 @Override
                 public void onSave(String title, String description,
                                    List<Uri> photoUris, @Nullable Uri audioUri,
-                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot,@Nullable String refCaption,
-                                   @Nullable String refHints,
-                                   @Nullable Integer refPhotoIndex) {
+                                   @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
 
-                    final String  refCaptionF = (refCaption == null) ? "" : refCaption.trim();
-                    final String  refHintsF   = (refHints == null)   ? "" : refHints.trim();
-                    final Integer refIndexF   = refPhotoIndex;
 
                     // Wrap the existing save pipeline so we can optionally confirm first
                     Runnable doActualSave = () -> {
@@ -1612,27 +1604,10 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                                             orient.put("placementEnv", envMode.name());
                                             if (cellKeyStr != null) orient.put("cellKey", cellKeyStr);
 
-// NEW: reference guidance blob
-                                            Map<String, Object> ref = new HashMap<>();
-                                            if (!refCaptionF.isEmpty()) ref.put("refCaption", refCaptionF);
-                                            if (!refHintsF.isEmpty())   ref.put("refHints",   refHintsF);
+                                            Map<String, Object> patch = new HashMap<>(orient); patch.put("extras", new HashMap<>(orient));
 
-// Only keep refPhotoIndex if there's actually a photo at that index
-                                            if (refIndexF != null && photoUris != null && !photoUris.isEmpty()) {
-                                                int clamped = Math.max(0, Math.min(refIndexF, photoUris.size() - 1));
-                                                ref.put("refPhotoIndex", clamped);
-                                            }
 
-// Build the final patch
-                                            Map<String, Object> extras = new HashMap<>(orient);
-                                            extras.putAll(ref);
 
-                                            Map<String, Object> patch = new HashMap<>(orient);
-// Top-level duplicates for convenience in SpotAR reads:
-                                            patch.putAll(ref);
-                                            patch.put("extras", extras);
-
-// Write patch
                                             FirebaseFirestore.getInstance()
                                                     .collection(EGGS).document(docRef.getId())
                                                     .set(patch, SetOptions.merge());
@@ -1883,9 +1858,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             @Override
             public void onSave(String title, String description,
                                List<Uri> photoUris, @Nullable Uri audioUri,
-                               @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot,@Nullable String refCaption,
-                               @Nullable String refHints,
-                               @Nullable Integer refPhotoIndex) {
+                               @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
                 // your existing onSave body stays the same (see next section for one small addition)
                 // (we are not duplicating it here to keep this snippet focused)
             }
@@ -2017,7 +1990,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                                 Toast.LENGTH_LONG).show());
     }
     /** One-time coach dialog shown before the first placement session. */
+    private void showPlacementCoachDialog() {
+        if (isFinishing() || isDestroyed()) return;
 
+        // Default to showing once unless the user opted out.
+        boolean shouldShow = (prefs == null) || prefs.getBoolean(KEY_SHOW_COACH, true);
+        if (!shouldShow) return;
+
+        new AlertDialog.Builder(this)
+                .setTitle("How to place ")
+                .setMessage(
+                        "• Move slowly; aim at well-lit, textured areas until you see a mesh/grid.\n" +
+                                "• Tap on the grid/points to place.\n" +
+                                "• If nothing is hittable, tap once to place along a geospatial ray, " +
+                                "then pinch or use the ± buttons to adjust distance.\n" +
+                                "• Press Save to upload, optionally hosting a Cloud Anchor."
+                )
+                .setPositiveButton("Got it", (d, w) -> {
+                    if (prefs != null) prefs.edit().putBoolean(KEY_SHOW_COACH, false).apply();
+                })
+                .setNegativeButton("Show again next time", (d, w) -> {
+                    if (prefs != null) prefs.edit().putBoolean(KEY_SHOW_COACH, true).apply();
+                })
+                .show();
+    }
 
 
     private void configureSession() {
@@ -2178,7 +2174,26 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return 0.0;
     }
 
+    private void maybeShowScanHints(Frame frame, Camera camera) {
+        long now = System.currentTimeMillis();
+        if (now - coachLastHintMs < COACH_HINT_MIN_INTERVAL_MS) return;
 
+        int trackedPlanes = 0;
+        for (Plane p : session.getAllTrackables(Plane.class)) {
+            if (p.getTrackingState() == TrackingState.TRACKING && p.getSubsumedBy() == null) {
+                trackedPlanes++;
+            }
+        }
+
+        if (trackedPlanes == 0) {
+            messageSnackbarHelper.showMessage(this,
+                    "Still looking for surfaces… move slowly; aim at textured, well-lit areas.");
+        } else {
+            messageSnackbarHelper.showMessage(this,
+                    "Surface found ✓ — tap on the grid/points to place an egg.");
+        }
+        coachLastHintMs = now;
+    }
 
     private void ensureStatusShownNoReset() {
         statusDlg = CenterStatusDialogFragment.showOnce(
@@ -2213,7 +2228,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private void uiShowProgress(String title, String line1, @Nullable String line2) {
-        if (!SHOW_GUIDANCE) return;
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
             ensureStatusShownNoReset();
@@ -2222,27 +2236,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private void uiShowMessage(String title, String message, boolean okButton) {
-        if (!SHOW_GUIDANCE) return;
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
-            boolean endOfFlow = title != null && (title.startsWith("All set") || title.startsWith("Not hosted")
-                    || title.startsWith("Hosting failed") || title.startsWith("Ready")
-                    || title.startsWith("Saved (geospatial)") || title.startsWith("Save (geospatial) failed")
-                    || title.startsWith("Need location"));
+            boolean endOfFlow = title != null && (title.startsWith("All set") || title.startsWith("Not hosted") || title.startsWith("Hosting failed") || title.startsWith("Ready") || title.startsWith("Saved (geospatial)") || title.startsWith("Save (geospatial) failed") || title.startsWith("Need location"));
             if (endOfFlow) ensureStatusShownAndRearm();
             else ensureStatusShownNoReset();
+
             if (statusDlg != null) statusDlg.showMessage(title, message, okButton);
         });
     }
 
-    private void uiHideStatus() {
-        if (!SHOW_GUIDANCE) return;
-        runOnUiThread(this::hideStatus);
-    }
-
-    private void showPlacementCoachDialog() { if (!SHOW_GUIDANCE) return; }
-
-    private void maybeShowScanHints(Frame frame, Camera camera) { if (!SHOW_GUIDANCE) return; }
+    private void uiHideStatus() { runOnUiThread(this::hideStatus); }
 
     private void hideStatus() {
         if (statusDlg != null) try { statusDlg.dismissAllowingStateLoss(); } catch (Throwable ignore) {}

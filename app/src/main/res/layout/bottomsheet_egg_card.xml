@@ -35,6 +35,7 @@
                     android:text="Save this Egg?"
                     android:textSize="22sp"
                     android:textStyle="bold" />
+
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
@@ -181,93 +182,6 @@
             </LinearLayout>
         </com.google.android.material.card.MaterialCardView>
 
-        <!-- Reference guidance (optional; EggCardSheet toggles TextInputLayouts visibility) -->
-        <com.google.android.material.card.MaterialCardView
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
-            android:padding="12dp"
-            app:cardCornerRadius="12dp"
-            app:strokeColor="?attr/colorOutline"
-            app:strokeWidth="1dp">
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="vertical">
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:text="Reference guidance (optional)"
-                    android:textStyle="bold"
-                    android:textSize="16sp" />
-
-                <TextView
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="4dp"
-                    android:alpha="0.75"
-                    android:text="If we couldn’t lock to a surface, add a clear photo of the exact spot. You can also add a short caption and extra hints to guide correct placement." />
-
-                <!-- Caption (short) -->
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/refCaptionLayout"
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    app:boxCornerRadiusTopStart="14dp"
-                    app:boxCornerRadiusTopEnd="14dp"
-                    app:boxCornerRadiusBottomStart="14dp"
-                    app:boxCornerRadiusBottomEnd="14dp"
-                    app:counterEnabled="true"
-                    app:counterMaxLength="80"
-                    app:helperTextEnabled="true"
-                    app:helperText="Short caption shown to SpotAR users">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/refCaptionInput"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minHeight="56dp"
-                        android:hint="Caption for this spot (e.g., “Under the blue sign”)"
-                        android:maxLines="1"
-                        android:imeOptions="actionNext" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-                <!-- Extra hints (multi-line) -->
-                <com.google.android.material.textfield.TextInputLayout
-                    android:id="@+id/refHintsLayout"
-                    style="@style/Widget.Material3.TextInputLayout.OutlinedBox"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="10dp"
-                    app:boxCornerRadiusTopStart="14dp"
-                    app:boxCornerRadiusTopEnd="14dp"
-                    app:boxCornerRadiusBottomStart="14dp"
-                    app:boxCornerRadiusBottomEnd="14dp"
-                    app:counterEnabled="true"
-                    app:counterMaxLength="200"
-                    app:helperTextEnabled="true"
-                    app:helperText="Landmarks, distances, or orientation notes">
-
-                    <com.google.android.material.textfield.TextInputEditText
-                        android:id="@+id/refHintsInput"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minLines="3"
-                        android:maxLines="6"
-                        android:hint="Extra hints (e.g., “Center on the plaque, align with the left edge of the window.”)"
-                        android:gravity="top|start"
-                        android:inputType="textCapSentences|textMultiLine"
-                        android:overScrollMode="always"
-                        android:scrollbars="vertical" />
-                </com.google.android.material.textfield.TextInputLayout>
-
-            </LinearLayout>
-        </com.google.android.material.card.MaterialCardView>
-
         <!-- Actions pinned at bottom of content -->
         <LinearLayout
             android:layout_width="match_parent"
@@ -299,6 +213,5 @@
                 android:textColor="#FAFAFA"
                 app:backgroundTint="#DA1B5B90"/>
         </LinearLayout>
-
     </LinearLayout>
 </ScrollView>

@@ -94,10 +94,7 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                     String description,
                     List<Uri> photoUris,
                     @Nullable Uri audioUri, // still null
-                    @Nullable GeoPoseSnapshot geoPose,
-                    @Nullable String refCaption,
-                    @Nullable String refHints,
-                    @Nullable Integer refPhotoIndex);
+                    @Nullable GeoPoseSnapshot geoPose);
         void onCancel();
     }
 
@@ -213,11 +210,6 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         cancelBtn = root.findViewById(R.id.cancelBtn);
         saveBtn   = root.findViewById(R.id.saveBtn);
 
-        // NEW: optional reference metadata inputs (add these IDs to your layout)
-        refCaptionLayout = root.findViewById(R.id.refCaptionLayout);
-        refHintsLayout   = root.findViewById(R.id.refHintsLayout);
-        refCaptionInput  = root.findViewById(R.id.refCaptionInput);
-        refHintsInput    = root.findViewById(R.id.refHintsInput);
 
         touchSlopPx = ViewConfiguration.get(requireContext()).getScaledTouchSlop();
 
@@ -281,10 +273,7 @@ public class EggCardSheet extends BottomSheetDialogFragment {
                         desc,
                         new ArrayList<>(pickedPhotoUris),
                         /* audio */ null,
-                        geoPoseSnapshot,
-                        safeText(refCaptionInput),
-                        safeText(refHintsInput),
-                        refIndex
+                        geoPoseSnapshot
                 );
             }
             dismissAllowingStateLoss();
