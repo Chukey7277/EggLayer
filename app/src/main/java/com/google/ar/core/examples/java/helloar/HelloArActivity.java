@@ -282,6 +282,27 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // turn on to lock the star's orientation everywhere
     private static final boolean ALWAYS_FACE_CAMERA = true;
 
+    // fields
+    private static final String KEY_SCAN_UI_KILLED = "scan_ui_killed";
+    private boolean scanUiKilled = false;
+
+    // NEW: two models we can render per anchor
+    private enum ModelType { STAR, PUZZLE }
+
+    // NEW: current flow flag + preview model
+    private boolean inPuzzleFlow = false;
+    private ModelType currentPreviewModel = ModelType.STAR;
+
+    // STAR set
+    private Mesh starMesh;
+    private Shader starShader;
+    private Texture starTexture;
+
+    // PUZZLE/MAGNIFIER set
+    private Mesh puzzleMesh;
+    private Shader puzzleShader;
+    private Texture puzzleTexture;
+
     // If you prefer a single global orientation (not facing camera), use this instead:
     private static final float[] FIXED_WORLD_Q = quatMul(yawToQuaternion(0f), MODEL_UPRIGHT_FIX);
 
@@ -423,6 +444,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        scanUiKilled = prefs.getBoolean(KEY_SCAN_UI_KILLED, false);
 
 
         tvEarthState  = findViewById(R.id.tvEarthState);
@@ -614,14 +636,12 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
 
         boolean hasActivePlacement = (currentPlacedAnchor != null) || !wrappedAnchors.isEmpty();
-        if (!inMetadataFlow && !hasActivePlacement) {
+        if (!inMetadataFlow && !hasActivePlacement && !scanUiKilled) {
             placementModeActive = false;
             readyPromptShown = false;
-            uiShowProgress(
-                    "Scanning",
+            uiShowProgress("Scanning",
                     "Move slowly — waiting for surfaces (mesh/grid) to appear…",
-                    "Aim at well-lit, textured areas."
-            );
+                    "Aim at well-lit, textured areas.");
             showPlacementCoachDialog();
         }
 
@@ -853,24 +873,33 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 if (p.getTrackingState() == TrackingState.TRACKING && p.getSubsumedBy() == null) trackedPlanes++;
             }
 
-            if (!placementModeActive) {
-                if (trackedPlanes == 0) {
-                    readyPromptShown = false;
-                    uiShowProgress(
-                            "Scanning",
-                            "Move slowly — waiting for surfaces (mesh/grid) to appear…",
-                            "Aim at well-lit, textured areas."
-                    );
-                } else if (!readyPromptShown) {
-                    readyPromptShown = true;
-                    placementModeActive = true;
-                    uiShowMessage(
-                            "Ready",
-                            "Surfaces detected — tap OK to start placing.\n(Then tap on the mesh/grid.)",
-                            true);
-                }
-            } else {
+            if (!scanUiKilled && trackedPlanes > 0) {
+                scanUiKilled = true;
+                if (prefs != null) prefs.edit().putBoolean(KEY_SCAN_UI_KILLED, true).apply(); // persist across runs
                 uiHideStatus();
+            }
+
+            // Suppress scan/ready UI during metadata AND after we've seen planes once
+            if (!inMetadataFlow && !scanUiKilled) {
+                if (!placementModeActive) {
+                    if (trackedPlanes == 0) {
+                        readyPromptShown = false;
+                        uiShowProgress(
+                                "Scanning",
+                                "Move slowly — waiting for surfaces (mesh/grid) to appear…",
+                                "Aim at well-lit, textured areas."
+                        );
+                    } else if (!readyPromptShown) {
+                        readyPromptShown = true;
+                        placementModeActive = true;
+                        uiShowMessage(
+                                "Ready",
+                                "Surfaces detected — tap OK to start placing.\n(Then tap on the mesh/grid.)",
+                                true);
+                    }
+                } else {
+                    uiHideStatus();
+                }
             }
         } catch (Throwable ignore) {}
 
@@ -1991,7 +2020,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
     /** One-time coach dialog shown before the first placement session. */
     private void showPlacementCoachDialog() {
-        if (isFinishing() || isDestroyed()) return;
+        if (scanUiKilled || isFinishing() || isDestroyed()) return;
 
         // Default to showing once unless the user opted out.
         boolean shouldShow = (prefs == null) || prefs.getBoolean(KEY_SHOW_COACH, true);
@@ -2175,6 +2204,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private void maybeShowScanHints(Frame frame, Camera camera) {
+        if (scanUiKilled) return;
         long now = System.currentTimeMillis();
         if (now - coachLastHintMs < COACH_HINT_MIN_INTERVAL_MS) return;
 
