@@ -43,27 +43,30 @@ public class SampleRender {
     glSurfaceView.setEGLContextClientVersion(3);
     glSurfaceView.setEGLConfigChooser(8, 8, 8, 8, 16, 0);
     glSurfaceView.setRenderer(
-        new GLSurfaceView.Renderer() {
-          @Override
-          public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-            GLES30.glEnable(GLES30.GL_BLEND);
-            GLError.maybeThrowGLException("Failed to enable blending", "glEnable");
-            renderer.onSurfaceCreated(SampleRender.this);
-          }
+            new GLSurfaceView.Renderer() {
+              @Override
+              public void onSurfaceCreated(GL10 gl, EGLConfig config) {
+                GLES30.glEnable(GLES30.GL_BLEND);
+                // ✅ Needed so virtual scene (FBO) composites correctly over the camera background
+                GLES30.glBlendFunc(GLES30.GL_ONE, GLES30.GL_ONE_MINUS_SRC_ALPHA);
+                GLError.maybeThrowGLException("Failed to set blending", "glEnable/glBlendFunc");
+                renderer.onSurfaceCreated(SampleRender.this);
+              }
 
-          @Override
-          public void onSurfaceChanged(GL10 gl, int w, int h) {
-            viewportWidth = w;
-            viewportHeight = h;
-            renderer.onSurfaceChanged(SampleRender.this, w, h);
-          }
+              @Override
+              public void onSurfaceChanged(GL10 gl, int w, int h) {
+                viewportWidth = w;
+                viewportHeight = h;
+                renderer.onSurfaceChanged(SampleRender.this, w, h);
+              }
 
-          @Override
-          public void onDrawFrame(GL10 gl) {
-            clear(/*framebuffer=*/ null, 0f, 0f, 0f, 1f);
-            renderer.onDrawFrame(SampleRender.this);
-          }
-        });
+              @Override
+              public void onDrawFrame(GL10 gl) {
+                // OK to keep: clears default FB (color+depth) before AR background + overlays render.
+                clear(/*framebuffer=*/ null, 0f, 0f, 0f, 1f);
+                renderer.onDrawFrame(SampleRender.this);
+              }
+            });
     glSurfaceView.setRenderMode(GLSurfaceView.RENDERMODE_CONTINUOUSLY);
     glSurfaceView.setWillNotDraw(false);
   }
@@ -101,27 +104,27 @@ public class SampleRender {
   }
 
   /** Interface to be implemented for rendering callbacks. */
-  public static interface Renderer {
+  public interface Renderer {
     /**
      * Called by {@link SampleRender} when the GL render surface is created.
      *
      * <p>See {@link GLSurfaceView.Renderer#onSurfaceCreated}.
      */
-    public void onSurfaceCreated(SampleRender render);
+    void onSurfaceCreated(SampleRender render);
 
     /**
      * Called by {@link SampleRender} when the GL render surface dimensions are changed.
      *
      * <p>See {@link GLSurfaceView.Renderer#onSurfaceChanged}.
      */
-    public void onSurfaceChanged(SampleRender render, int width, int height);
+    void onSurfaceChanged(SampleRender render, int width, int height);
 
     /**
      * Called by {@link SampleRender} when a GL frame is to be rendered.
      *
      * <p>See {@link GLSurfaceView.Renderer#onDrawFrame}.
      */
-    public void onDrawFrame(SampleRender render);
+    void onDrawFrame(SampleRender render);
   }
 
   /* package-private */

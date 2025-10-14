@@ -7,16 +7,18 @@
     android:fitsSystemWindows="true"
     tools:context="com.google.ar.core.examples.java.helloar.HelloArActivity">
 
-  <!-- Camera / AR surface -->
+  <!-- Camera / AR surface (must receive taps/gestures) -->
   <android.opengl.GLSurfaceView
       android:id="@+id/surfaceview"
       android:layout_width="match_parent"
       android:layout_height="match_parent"
       android:layout_alignParentTop="true"
       android:layout_alignParentStart="true"
-      android:keepScreenOn="true" />
+      android:keepScreenOn="true"
+      android:clickable="true"
+      android:focusableInTouchMode="true" />
 
-  <!-- Small HUD (top-left) -->
+  <!-- Small HUD (top-left) - non-clickable so it won't intercept taps -->
   <LinearLayout
       android:id="@+id/hudContainer"
       android:layout_width="wrap_content"
@@ -27,7 +29,9 @@
       android:orientation="vertical"
       android:padding="8dp"
       android:background="#66000000"
-      android:elevation="6dp">
+      android:elevation="6dp"
+      android:clickable="false"
+      android:focusable="false">
 
     <TextView
         android:id="@+id/tvEarthState"
@@ -36,7 +40,9 @@
         android:text="Earth: —"
         android:textColor="@android:color/white"
         android:textSize="14sp"
-        android:layout_marginTop="4dp"/>
+        android:layout_marginTop="4dp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvLatLng"
@@ -44,7 +50,9 @@
         android:layout_height="wrap_content"
         android:text="LAT/LNG: —"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvLatLngAcc"
@@ -52,7 +60,9 @@
         android:layout_height="wrap_content"
         android:text="H-Accuracy: —"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvAlt"
@@ -60,7 +70,9 @@
         android:layout_height="wrap_content"
         android:text="ALTITUDE: —"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvAltAcc"
@@ -68,7 +80,9 @@
         android:layout_height="wrap_content"
         android:text="V-Accuracy: —"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvHeading"
@@ -76,7 +90,9 @@
         android:layout_height="wrap_content"
         android:text="HEADING: —"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvHeadingAcc"
@@ -84,7 +100,9 @@
         android:layout_height="wrap_content"
         android:text="Heading accuracy: —"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
 
     <TextView
         android:id="@+id/tvAnchorState"
@@ -92,7 +110,9 @@
         android:layout_height="wrap_content"
         android:text="Anchor: none"
         android:textColor="@android:color/white"
-        android:textSize="12sp" />
+        android:textSize="12sp"
+        android:clickable="false"
+        android:focusable="false"/>
   </LinearLayout>
 
   <!-- Ray distance controls (top-right) -->
@@ -131,7 +151,7 @@
         android:contentDescription="Decrease distance" />
   </LinearLayout>
 
-  <!-- Bottom info card -->
+  <!-- Bottom info card (non-clickable, won’t intercept) -->
   <TextView
       android:id="@+id/poseInfoCard"
       android:layout_width="match_parent"
@@ -142,6 +162,8 @@
       android:padding="12dp"
       android:textSize="14sp"
       android:visibility="gone"
-      android:elevation="6dp" />
+      android:elevation="6dp"
+      android:clickable="false"
+      android:focusable="false" />
 
 </RelativeLayout>

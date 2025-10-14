@@ -209,7 +209,7 @@
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:text="Save"
+                android:text="@string/action_save"
                 android:textColor="#FAFAFA"
                 app:backgroundTint="#DA1B5B90"/>
         </LinearLayout>
