@@ -21,7 +21,7 @@
   <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
   <!-- Optional for Android 13+ notifications (if you post any) -->
-  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+<!--  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />-->
 
   <!-- Required features -->
   <uses-feature android:name="android.hardware.camera" android:required="true" />

@@ -49,7 +49,7 @@
             android:paddingEnd="24dp"
             android:paddingTop="24dp"
             android:paddingBottom="24dp"
-            android:text="1. Point your camera at the ground\n2. Wait for Earth tracking to turn green\n3. Tap to place your star\n4. Add description and photos\n5. Save your star 🙂"
+            android:text="1. Point your camera at the ground\n2. Wait for Earth tracking \n3. Tap to place your model\n4. Add description and photos\n5. Save your model🙂"
             android:textColor="@color/blue_text_primary"
             android:textSize="16sp" />
     </androidx.cardview.widget.CardView>

@@ -35,6 +35,8 @@ import com.google.ar.core.Anchor;
 import com.google.ar.core.ArCoreApk;
 import com.google.ar.core.ArCoreApk.Availability;
 import com.google.ar.core.Camera;
+import com.google.ar.core.CameraConfig;
+import com.google.ar.core.CameraConfigFilter;
 import com.google.ar.core.Config;
 import com.google.ar.core.DepthPoint;
 import com.google.ar.core.Earth;
@@ -139,7 +141,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private boolean previousEggsLoadedOnce = false;
     private long lastPrevLoadAtMs = 0L;
     private static final long PREV_RELOAD_MS = 60_000L;
-    private final Set<String> mountedPrevDocIds = new HashSet<>();
+    private final Set<String> mountedPrevDocIds =
+            java.util.Collections.synchronizedSet(new HashSet<>());
 
     private static final boolean ENABLE_QUIZ = false;
 
@@ -245,6 +248,16 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     // Top-left UI controls for ray mode
     private View rayControlsContainer;
     private Button btnRayMinus, btnRayPlus;
+    private static final double MOUNT_RADIUS_M = 80.0; // or 100–150 to taste
+
+    private static double haversineMeters(double lat1, double lon1, double lat2, double lon2) {
+        double R = 6371000.0;
+        double dLat = Math.toRadians(lat2 - lat1), dLon = Math.toRadians(lon2 - lon1);
+        double a = Math.sin(dLat/2)*Math.sin(dLat/2) +
+                Math.cos(Math.toRadians(lat1))*Math.cos(Math.toRadians(lat2)) *
+                        Math.sin(dLon/2)*Math.sin(dLon/2);
+        return R * 2.0 * Math.atan2(Math.sqrt(a), Math.sqrt(1.0 - a));
+    }
     // =========================================================
 
     // Global (legacy) suppression window (kept) + per-anchor windows.
@@ -281,17 +294,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     // Approx raw height of each OBJ in its own units (Y-extent).
 // If you don't know, start with 1.0f and adjust.
-    private static final float STAR_RAW_HEIGHT_UNITS   = 1.0f;
-    private static final float PUZZLE_RAW_HEIGHT_UNITS = 1.0f;
+    private static final float STAR_RAW_HEIGHT_UNITS   = 1.6f;
+    private static final float PUZZLE_RAW_HEIGHT_UNITS = 1.6f;
     // One place to tune model size in world meters-per-model-unit
 
-    private static final float MODEL_BASE_SCALE = 0.25f; // was 0.02f → ~40% smaller
+    private static final float MODEL_BASE_SCALE = 0.3f; // was 0.02f → ~40% smaller
     private static final float STAR_SIZE_MULT   = 0.5f;
     private static final float PUZZLE_SIZE_MULT = 2f;   // or 1.0f if you want same as star
 
     private static final float[] MODEL_UPRIGHT_FIX = quatAxisAngle(1, 0, 0, 0f);
-    // Extra multipliers applied only to *saved* anchors (prevAnchors)
-    private static final float SAVED_STAR_MULT   = 1.6f; // <- bump to taste
+    // Extra multipliers applied only to *saaved* anchors (prevAnchors)
+    private static final float SAVED_STAR_MULT   = 1.0f; // <- bump to taste
     private static final float SAVED_PUZZLE_MULT = 1.0f; // keep puzzles unchanged
 
     // turn on to lock the star's orientation everywhere
@@ -308,10 +321,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private boolean inPuzzleFlow = false;
     private ModelType currentPreviewModel = ModelType.STAR;
-    private static final float STAR_TARGET_PX   = 24f;  // try 32–64
-    private static final float PUZZLE_TARGET_PX = 22f;  // magnifier a bit smaller
+    private static final float STAR_TARGET_PX   = 65f;  // try 32–64
+    private static final float PUZZLE_TARGET_PX = 96f;  // magnifier a bit smaller
     @Nullable private WrappedAnchor selectedAnchor = null;
-    private static final float PICK_RADIUS_PX = 96f; // tap distance threshold in screen pixels
+    private static final float PICK_RADIUS_DP = 48f; // ~48dp base
+    @Nullable private Pose lastCameraPose = null;
+
+    // show scanning dialog only once for the whole Activity lifetime
+    private boolean initialScanDialogShown = false;
+    // fields
+    private volatile boolean isSavingFlow = false;
+    // Put near the other helpers
+    private void runOnGl(Runnable r) {
+        if (surfaceView != null) {
+            surfaceView.queueEvent(() -> {
+                try { r.run(); } catch (Throwable t) { Log.e(TAG, "GL task failed", t); }
+            });
+        } else {
+            try { r.run(); } catch (Throwable t) { Log.e(TAG, "GL task failed", t); }
+        }
+    }
+    private static final float MIN_RENDER_DISTANCE_M = 0.35f; // ~35 cm; tune to taste
+    private float dpToPx(float dp) {
+        return dp * getResources().getDisplayMetrics().density;
+    }
 
 
 
@@ -421,13 +454,27 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        ensureAnonAuthThen(this::testFirestoreWrite);
-        testResolveFromApp();
 
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
-                != PackageManager.PERMISSION_GRANTED) {
-            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_FINE_LOCATION);
+        // 1) Always ensure auth for real features (release + debug)
+        if (FirebaseAuth.getInstance().getCurrentUser() == null) {
+            FirebaseAuth.getInstance().signInAnonymously()
+                    .addOnSuccessListener(r -> { /* ready */ })
+                    .addOnFailureListener(e ->
+                            Toast.makeText(this, "Sign-in failed: " + e.getMessage(), Toast.LENGTH_LONG).show()
+                    );
         }
+
+        // 2) Debug-only probes
+        if (BuildConfig.DEBUG) {
+            testResolveFromApp();
+            // If you want the test write only *after* auth:
+            ensureAnonAuthThen(this::testFirestoreWrite);
+        }
+
+//        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+//                != PackageManager.PERMISSION_GRANTED) {
+//            ActivityCompat.requestPermissions(this, new String[]{Manifest.permission.ACCESS_FINE_LOCATION}, REQ_FINE_LOCATION);
+//        }
 
         setContentView(R.layout.activity_main);
         prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -543,6 +590,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         wrappedAnchors.clear();
         currentPlacedAnchor = null;
     }
+    private void clearExistingPreviewAsync() {
+        runOnGl(this::clearExistingPreview);
+    }
 
     @Override protected void onDestroy() {
         if (session != null) {
@@ -554,6 +604,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     @Override
     protected void onResume() {
         super.onResume();
+        surfaceView.onResume();
+        displayRotationHelper.onResume();
 
         if (session == null) {
             Exception exception = null;
@@ -587,7 +639,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 session.resume();
                 sessionPaused = false;
 
-            } catch (UnavailableArcoreNotInstalledException | UnavailableUserDeclinedInstallationException e) {
+            } catch (UnavailableArcoreNotInstalledException |
+                     UnavailableUserDeclinedInstallationException e) {
                 message = "Please install ARCore";
                 exception = e;
             } catch (UnavailableApkTooOldException e) {
@@ -639,7 +692,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
 
         boolean hasActivePlacement = (currentPlacedAnchor != null) || !wrappedAnchors.isEmpty();
-        if (!inMetadataFlow && !hasActivePlacement) {
+        if (!inMetadataFlow && !hasActivePlacement && !initialScanDialogShown) {
             placementModeActive = false;
             readyPromptShown = false;
             uiShowProgress(
@@ -648,10 +701,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     "Aim at well-lit, textured areas."
             );
             showPlacementCoachDialog();
+            initialScanDialogShown = true; // lock it so it never shows again
         }
-
-        surfaceView.onResume();
-        displayRotationHelper.onResume();
     }
 
     @Override protected void onPause() {
@@ -774,7 +825,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         .setTexture("u_Cubemap", cubemapFilter.getFilteredCubemapTexture())
                         .setTexture("u_DfgTexture", dfgTexture)
                         .setDepthTest(true)
-                        .setDepthWrite(false);
+                        .setDepthWrite(true);
 
                 // --- PUZZLE (magnifier) ---
                 Texture magnifierTex;
@@ -797,7 +848,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         .setTexture("u_Cubemap", cubemapFilter.getFilteredCubemapTexture())
                         .setTexture("u_DfgTexture", dfgTexture)
                         .setDepthTest(true)
-                        .setDepthWrite(false);
+                        .setDepthWrite(true);
 
                 // Per-model arrays used by the draw loop
                 starMeshes    = new Mesh[]  { starMesh };
@@ -885,35 +936,100 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Log.e(TAG, "onSurfaceCreated: fatal init error", t);
         }
     }
+    // ===== REPLACE your proceedToSave(...) with this =====
     private void proceedToSave(
             String title,
             String description,
             List<Uri> photoUris,
             @Nullable Uri audioUri,
-            Camera cameraForSave
+            Camera cameraForSave,
+            @Nullable EggCardSheet.GeoPoseSnapshot snapshot
     ) {
+        // We’re leaving the sheet and entering a saving flow
         inMetadataFlow = false;
+        isSavingFlow = true;
+
+        // Keep scan hints suppressed and DO NOT auto-hide the status dialog
         placementModeActive = false;
         uiShowProgress("Saving", inPuzzleFlow ? "Saving the puzzle…" : "Saving the star…", null);
 
-        GeospatialPose finalGp = null;
         Earth earthNow = null;
+        GeospatialPose camNow = null;
+        GeospatialPose anchorGp = null;
         try {
-            earthNow = session.getEarth();
-            if (earthNow != null
-                    && earthNow.getTrackingState() == TrackingState.TRACKING
-                    && currentPlacedAnchor != null) {
-                finalGp = earthNow.getGeospatialPose(currentPlacedAnchor.getPose());
+            earthNow = (session != null) ? session.getEarth() : null;
+            if (earthNow != null && earthNow.getTrackingState() == TrackingState.TRACKING) {
+                try { camNow = earthNow.getCameraGeospatialPose(); } catch (Throwable ignore) {}
+                if (currentPlacedAnchor != null) {
+                    try { anchorGp = earthNow.getGeospatialPose(currentPlacedAnchor.getPose()); } catch (Throwable ignore) {}
+                }
             }
         } catch (Throwable ignore) {}
 
+        final boolean anchorOk = anchorGp != null
+                && anchorGp.getHorizontalAccuracy() <= hGate()
+                && !Double.isNaN(anchorGp.getVerticalAccuracy())
+                && anchorGp.getVerticalAccuracy() <= vGate();
+
+        final boolean snapOk = snapshot != null
+                && snapshot.hAcc <= hGate()
+                && !Double.isNaN(snapshot.vAcc)
+                && snapshot.vAcc <= vGate();
+
+        final boolean camOk = camNow != null
+                && camNow.getHorizontalAccuracy() <= hGate()
+                && !Double.isNaN(camNow.getVerticalAccuracy())
+                && camNow.getVerticalAccuracy() <= vGate();
+
+        // Choose "best available" geo. Prefer accurate → snapshot → accurate camera.
+        Double lat = null, lng = null, alt = null, hAcc = null, vAcc = null;
+        if (anchorOk) {
+            lat  = anchorGp.getLatitude();
+            lng  = anchorGp.getLongitude();
+            alt  = anchorGp.getAltitude();
+            hAcc = anchorGp.getHorizontalAccuracy();
+            vAcc = anchorGp.getVerticalAccuracy();
+        } else if (snapOk) {
+            lat  = snapshot.lat;
+            lng  = snapshot.lng;
+            alt  = snapshot.alt;
+            hAcc = snapshot.hAcc;
+            vAcc = snapshot.vAcc;
+        } else if (camOk) {
+            lat  = camNow.getLatitude();
+            lng  = camNow.getLongitude();
+            alt  = camNow.getAltitude();
+            hAcc = camNow.getHorizontalAccuracy();
+            vAcc = camNow.getVerticalAccuracy();
+        }
+
+        // Fallback: even if not accurate, still record provisional geo so it can mount later
+        if (lat == null && anchorGp != null) {
+            lat  = anchorGp.getLatitude();
+            lng  = anchorGp.getLongitude();
+            alt  = anchorGp.getAltitude();
+            hAcc = anchorGp.getHorizontalAccuracy();
+            vAcc = anchorGp.getVerticalAccuracy();
+        } else if (lat == null && camNow != null) {
+            lat  = camNow.getLatitude();
+            lng  = camNow.getLongitude();
+            alt  = camNow.getAltitude();
+            hAcc = camNow.getHorizontalAccuracy();
+            vAcc = camNow.getVerticalAccuracy();
+        }
+
+        boolean goodAcc = (hAcc != null && vAcc != null && hAcc <= hGate() && vAcc <= vGate());
+        boolean haveLatLngAny = (lat != null && lng != null);
+
         double headingNow = Double.NaN;
         try {
-            GeospatialPose camNow = (earthNow != null) ? earthNow.getCameraGeospatialPose() : null;
             headingNow = goodHeadingDeg(camNow, lastGoodGeoPose, headGate());
+            if (Double.isNaN(headingNow) && snapshot != null && !Double.isNaN(snapshot.heading)) {
+                headingNow = snapshot.heading;
+            }
         } catch (Throwable ignore) {}
 
-        // Build the document model
+        // Build doc
         EggEntry e = new EggEntry();
         e.title = (title == null) ? "" : title;
         e.description = (description == null) ? "" : description;
@@ -923,12 +1039,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         FirebaseUser user = FirebaseAuth.getInstance().getCurrentUser();
         if (user != null) e.userId = user.getUid();
 
-        if (finalGp != null) {
-            e.geo      = new com.google.firebase.firestore.GeoPoint(finalGp.getLatitude(), finalGp.getLongitude());
-            e.horizAcc = finalGp.getHorizontalAccuracy();
-            double vAcc = finalGp.getVerticalAccuracy();
-            e.vertAcc  = Double.isNaN(vAcc) ? null : vAcc;
-            e.alt      = finalGp.getAltitude();
+        if (haveLatLngAny) {
+            e.geo      = new com.google.firebase.firestore.GeoPoint(lat, lng);
+            e.horizAcc = hAcc;
+            e.vertAcc  = vAcc;
+            e.alt      = alt;
         }
 
         Trackable firstTrackable = (!wrappedAnchors.isEmpty()) ? wrappedAnchors.get(0).getTrackable() : null;
@@ -937,16 +1052,23 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 ? distance(currentPlacedAnchor.getPose(), cameraForSave.getPose())
                 : 0f;
 
-        // Anchor type decided by flow (initial value; we may patch later)
         e.anchorType = inPuzzleFlow ? "GEO_PUZZLE" : "CLOUD";
 
-        String cellKeyStr = (finalGp != null) ? cellKey(finalGp.getLatitude(), finalGp.getLongitude()) : null;
-        final Earth earthNowF = earthNow;
-        final GeospatialPose finalGpF = finalGp;
+        String cellKeyStr = (haveLatLngAny) ? cellKey(lat, lng) : null;
+
+        // === make everything captured by lambdas FINAL ===
+        final Earth earthNowF           = earthNow;
+        final GeospatialPose anchorGpF  = anchorGp;
+        final GeospatialPose camNowF    = camNow;
+
+        final Double latF  = lat,  lngF = lng,  altF = alt;
+        final Double hAccF = hAcc, vAccF = vAcc;
+        final boolean haveLatLngAnyF = haveLatLngAny;
+        final boolean goodAccF = goodAcc;
+        final String cellKeyStrF = cellKeyStr;
 
         eggRepo.createDraft(e).addOnSuccessListener(docRef -> {
-
-            // Patch orientation + extras
+            // Patch orientation + extras + provisional geo + status
             try {
                 float[] q = (lastHitPose != null)
                         ? lastHitPose.getRotationQuaternion()
@@ -961,59 +1083,37 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 orient.put("localQw", q[3]);
                 orient.put("surface", lastHitSurfaceType);
                 orient.put("placementEnv", envMode.name());
-                if (cellKeyStr != null) orient.put("cellKey", cellKeyStr);
                 orient.put("model", inPuzzleFlow ? "puzzle" : "star");
+                if (cellKeyStrF != null) orient.put("cellKey", cellKeyStrF);
 
                 Map<String, Object> patch = new HashMap<>(orient);
                 patch.put("extras", new HashMap<>(orient));
+                patch.put("anchorType", inPuzzleFlow ? "GEO_PUZZLE" : "CLOUD");
+
+                if (haveLatLngAnyF) {
+                    patch.put("geo", new com.google.firebase.firestore.GeoPoint(latF, lngF));
+                    if (altF  != null) patch.put("alt", altF);
+                    if (hAccF != null) patch.put("horizAcc", hAccF);
+                    if (vAccF != null) patch.put("vertAcc", vAccF);
+                    patch.put("cloudStatus", goodAccF ? "OK" : "LOW_GEOPOSE");
+                } else {
+                    patch.put("cloudStatus", "NO_GEOPOSE");
+                }
 
                 FirebaseFirestore.getInstance().collection(EGGS)
                         .document(docRef.getId())
                         .set(patch, SetOptions.merge());
-            } catch (Throwable t) {
-                Log.w(TAG, "Failed to patch local quaternion", t);
-            }
+            } catch (Throwable t) { Log.w(TAG, "Failed to patch orientation/geo", t); }
 
             uiShowProgress("Saving", "Uploading media…", null);
 
-            // --- Only compute HAT when it makes sense (planes + decent accuracy) ---
-            try {
-                boolean okSurface =
-                        "PLANE_HORIZONTAL".equals(lastHitSurfaceType) ||
-                                "PLANE_VERTICAL".equals(lastHitSurfaceType);
-                boolean okAcc = (finalGpF != null) &&
-                        finalGpF.getHorizontalAccuracy() <= hGate() &&
-                        !Double.isNaN(finalGpF.getVerticalAccuracy()) &&
-                        finalGpF.getVerticalAccuracy() <= vGate();
-
-                if (earthNowF != null && finalGpF != null && e.geo != null && okSurface && okAcc) {
-                    saveHeightAboveTerrain(
-                            earthNowF,
-                            e.geo.getLatitude(), e.geo.getLongitude(),
-                            finalGpF.getAltitude(),
-                            docRef.getId()
-                    );
-                } else {
-                    Log.d(TAG, "Skipping HAT (surface=" + lastHitSurfaceType +
-                            ", hAcc=" + (finalGpF != null ? finalGpF.getHorizontalAccuracy() : -1) +
-                            ", vAcc=" + (finalGpF != null ? finalGpF.getVerticalAccuracy() : -1) + ")");
-                }
-            } catch (Throwable t) { Log.w(TAG, "resolveAnchorOnTerrainAsync skipped", t); }
-
-            // Persist URI permissions
             if (photoUris != null) {
                 for (Uri u : photoUris) {
-                    try {
-                        getContentResolver().takePersistableUriPermission(
-                                u, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    } catch (Throwable ignore) {}
+                    try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignore) {}
                 }
             }
             if (audioUri != null) {
-                try {
-                    getContentResolver().takePersistableUriPermission(
-                            audioUri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                } catch (Throwable ignore) {}
+                try { getContentResolver().takePersistableUriPermission(audioUri, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Throwable ignore) {}
             }
 
             eggRepo.uploadMediaAndPatch(docRef, photoUris, audioUri)
@@ -1021,73 +1121,84 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         Toast.makeText(HelloArActivity.this, "Media uploaded ✓", Toast.LENGTH_SHORT).show();
 
                         if (!inPuzzleFlow && localAnchorForHosting != null) {
-                            // STAR path → host cloud
+                            // STAR → cloud host
                             FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
                                     .update("cloudStatus", "HOSTING",
                                             "cloudTtlDays", CLOUD_TTL_DAYS,
-                                            "anchorType", (envMode == Env.OUTDOOR ? "GEO+CLOUD" : "CLOUD"));
+                                            "anchorType", "CLOUD");
                             uiShowProgress("Saving", "Hosting anchor in the cloud…", "This can take a few seconds");
                             pendingEggDocId = docRef.getId();
 
-                            // Keep the item visible by mounting the persisted (saved) STAR
                             addPersistentAnchorForSaved(
-                                    docRef.getId(), finalGpF,
+                                    docRef.getId(), anchorGpF,
                                     (lastHitPose != null ? lastHitPose.getRotationQuaternion() : null),
                                     null, ModelType.STAR);
 
-                            // Start hosting using the dedicated local anchor
+// PATCH: remove temporary preview so only the saved STAR renders
+                            try { clearExistingPreviewAsync(); } catch (Throwable ignore) {}
+                            currentPlacedAnchor = null;
+
                             startHostingCloudAnchor(localAnchorForHosting, pendingEggDocId);
 
                         } else {
-                            // PUZZLE path → no hosting, save geospatial + show magnifier
-                            if (finalGpF != null) {
-                                FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
-                                        .update("cloudStatus", "NONE", "anchorType", "GEO_PUZZLE")
-                                        .addOnSuccessListener(v2 -> {
-                                            // Mount the persisted (saved) PUZZLE
-                                            addPersistentAnchorForSaved(
-                                                    docRef.getId(), finalGpF,
-                                                    (lastHitPose != null ? lastHitPose.getRotationQuaternion() : null),
-                                                    null, ModelType.PUZZLE);
+                            // PUZZLE → mount using geo only if accuracy is good; else clone local preview
+                            GeospatialPose gpForMount = null;
+                            if (goodAccF) {
+                                gpForMount = (anchorGpF != null) ? anchorGpF
+                                        : (camNowF != null ? camNowF : null);
+                            }
 
-                                            // Remove the temporary preview so taps select the saved one
-                                            try { clearExistingPreview(); } catch (Throwable ignore) {}
-                                            currentPlacedAnchor = null;
-                                            inPuzzleFlow = false;
-                                            placementModeActive = true;
-                                            readyPromptShown = true;
-                                            localAnchorForHosting = null;
-                                            hostState = HostState.IDLE;
+                            addPersistentAnchorForSaved(
+                                    docRef.getId(),
+                                    /*gp*/ gpForMount,
+                                    (lastHitPose != null ? lastHitPose.getRotationQuaternion() : null),
+                                    /*cloudId*/ null,
+                                    ModelType.PUZZLE
+                            );
 
-                                            // End-of-flow title resets the center dialog state
-                                            uiShowMessage("All set!",
-                                                    "Saved by location with photos ✓ (no cloud host).", true);
-                                        })
-                                        .addOnFailureListener(err ->
-                                                uiShowMessage("Save failed",
-                                                        "Could not mark as puzzle: " + err.getMessage(), true));
-                            } else {
-                                uiShowMessage("Need location",
-                                        "Couldn’t get geospatial pose. Move until AR Earth is tracking, then Save again.",
+                            // Remove the temporary preview and reset flow (GL-thread safe)
+                            try { clearExistingPreviewAsync(); } catch (Throwable ignore) {}
+                            currentPlacedAnchor = null;
+                            inPuzzleFlow = false;
+                            placementModeActive = true;
+                            readyPromptShown = true;
+                            localAnchorForHosting = null;
+                            hostState = HostState.IDLE;
+
+                            // Optionally save HAT
+                            try {
+                                boolean okSurface = "PLANE_HORIZONTAL".equals(lastHitSurfaceType)
+                                        || "PLANE_VERTICAL".equals(lastHitSurfaceType);
+                                if (earthNowF != null && haveLatLngAnyF && okSurface && goodAccF && altF != null) {
+                                    saveHeightAboveTerrain(earthNowF, latF, lngF, altF, docRef.getId());
+                                }
+                            } catch (Throwable ignore) {}
+
+                            // Message based on whether we captured any geo at all
+                            if (haveLatLngAnyF) {
+                                uiShowMessage("All set!",
+                                        goodAccF
+                                                ? "Saved by location with photos ✓"
+                                                : "Saved by location (low accuracy) ✓",
                                         true);
-                                FirebaseFirestore.getInstance().collection(EGGS).document(docRef.getId())
-                                        .update("cloudStatus", "NO_GEOPOSE");
+                            } else {
+                                uiShowMessage("Saved",
+                                        "Saved without precise location. It will appear once AR Earth is tracking.",
+                                        true);
                             }
                         }
                     })
                     .addOnFailureListener(err -> {
                         Log.e(TAG, "Media upload failed", err);
-                        Toast.makeText(HelloArActivity.this,
-                                "Upload failed: " + err.getMessage(), Toast.LENGTH_LONG).show();
+                        Toast.makeText(HelloArActivity.this, "Upload failed: " + err.getMessage(), Toast.LENGTH_LONG).show();
                         uiShowMessage("Upload failed", "Media upload failed: " + err.getMessage(), true);
                     });
 
         }).addOnFailureListener(err -> {
-            Log.e(TAG, "Egg save failed", err);
+            Log.e(TAG, "save failed", err);
             uiShowMessage("Save failed", "Could not save: " + err.getMessage(), true);
         });
     }
-
 
     @Override
     public void onSurfaceChanged(SampleRender render, int width, int height) {
@@ -1128,6 +1239,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         final Camera camera = frame.getCamera();
 
+        // NEW: cache camera pose for billboarding AND for near-distance culling
+        Pose camPoseForCull = null;
+        try { camPoseForCull = camera.getPose(); } catch (Throwable ignore) {}
+        if (camPoseForCull != null) lastCameraPose = camPoseForCull; // <-- critical fix
+
         try { backgroundRenderer.updateDisplayGeometry(frame); } catch (Throwable t) { return; }
 
         if (camera.getTrackingState() == TrackingState.TRACKING
@@ -1151,10 +1267,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         }
         if (camera.getTrackingState() != TrackingState.TRACKING) return;
 
-        // Scan UI hints — SUPPRESS while the metadata sheet is on screen
+        // Scan UI hints — keep hands off while saving or while the sheet is open
         try {
+            if (isSavingFlow) {
+                // While saving, never touch/hide/replace the status dialog.
+                return;
+
+            }
+
             if (inMetadataFlow) {
-                // Ensure any previous coach/progress dialog is hidden while user types
                 uiHideStatus();
             } else {
                 int trackedPlanes = 0;
@@ -1164,18 +1285,19 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
                 if (!placementModeActive) {
                     if (trackedPlanes == 0) {
-                        readyPromptShown = false;
-                        uiShowProgress(
-                                "Scanning",
-                                "Move slowly — waiting for surfaces (mesh/grid) to appear…",
-                                "Aim at well-lit, textured areas.");
+                        if (!initialScanDialogShown) {
+                            uiShowProgress(
+                                    "Scanning",
+                                    "Move slowly — waiting for surfaces (mesh/grid) to appear…",
+                                    "Aim at well-lit, textured areas.");
+                            initialScanDialogShown = true;
+                        } else {
+                            uiHideStatus(); // don't re-show after first time
+                        }
                     } else if (!readyPromptShown) {
                         readyPromptShown = true;
                         placementModeActive = true;
-                        uiShowMessage(
-                                "Ready",
-                                "Surfaces detected — tap OK to start placing.",
-                                true);
+                        uiShowMessage("Ready", "Surfaces detected — tap OK to start placing.", true);
                     }
                 } else {
                     uiHideStatus();
@@ -1189,10 +1311,15 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             camera.getViewMatrix(viewMatrix, 0);
         } catch (Throwable t) { return; }
 
-        // --- Draw plane grid with polygon offset ON (so it doesn't z-fight with anchors) ---
-        try { GLES30.glEnable(GLES30.GL_POLYGON_OFFSET_FILL); } catch (Throwable ignore) {}
-        try { GLES30.glPolygonOffset(1.0f, 1.0f); } catch (Throwable ignore) {}
+        // --- Draw plane grid as a non-occluding overlay ---
         try {
+            // Push planes slightly back to avoid z-fighting
+            GLES30.glEnable(GLES30.GL_POLYGON_OFFSET_FILL);
+            GLES30.glPolygonOffset(3.0f, 3.0f);   // CHANGED: was (1.0f, 1.0f)
+
+            // KEY CHANGE: planes do NOT write to the depth buffer
+            GLES30.glDepthMask(false);
+
             if (planeRenderer != null) {
                 planeRenderer.drawPlanes(
                         render,
@@ -1201,9 +1328,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         projectionMatrix
                 );
             }
-        } catch (Throwable ignore) {}
-        // Turn OFF polygon offset before drawing any virtual objects
-        try { GLES30.glDisable(GLES30.GL_POLYGON_OFFSET_FILL); } catch (Throwable ignore) {}
+        } finally {
+            // Restore depth writes and polygon offset state
+            GLES30.glDepthMask(true);
+            GLES30.glDisable(GLES30.GL_POLYGON_OFFSET_FILL);
+        }
 
         // Point cloud (optional)
         try (com.google.ar.core.PointCloud pc = frame.acquirePointCloud()) {
@@ -1234,18 +1363,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         pruneDeadAnchors(prevAnchors);
         pruneDeadAnchors(wrappedAnchors);
 
-        // Occlusion toggle (avoid depth occlusion during PAUSED anchors/grace windows)
-        boolean anyPaused = hasPausedAnchors(prevAnchors) || hasPausedAnchors(wrappedAnchors);
-        boolean anyPerAnchorNoOcc = hasActiveNoOcc(prevAnchors) || hasActiveNoOcc(wrappedAnchors);
-        boolean suppressOcclusion = anyPaused || anyPerAnchorNoOcc || (System.currentTimeMillis() < noOccUntilMs);
-        try {
-            backgroundRenderer.setUseOcclusion(
-                    render,
-                    suppressOcclusion ? false : depthSettings.useDepthForOcclusion()
-            );
-        } catch (Throwable ignore) {}
-
-        // Extra safety: make sure polygon offset is OFF before drawing models
         try { GLES30.glDisable(GLES30.GL_POLYGON_OFFSET_FILL); } catch (Throwable ignore) {}
         drawAnchorsList(prevAnchors,    MODEL_BASE_SCALE, /*isSavedList=*/true,  render);
         drawAnchorsList(wrappedAnchors, MODEL_BASE_SCALE, /*isSavedList=*/false, render);
@@ -1272,29 +1389,55 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 hostState = HostState.SUCCESS;
                 hostedCloudId = hostedCloudAnchor.getCloudAnchorId();
 
+                // 1) Remove any previous saved instance (geo/local) for this doc
+                try {
+                    if (pendingEggDocId != null) {
+                        try { mountedPrevDocIds.remove(pendingEggDocId); } catch (Throwable ignore) {}
+                        for (WrappedAnchor w : new ArrayList<>(prevAnchors)) {
+                            if (pendingEggDocId.equals(w.getDocId())) {
+                                try { if (w.getAnchor() != null) w.getAnchor().detach(); } catch (Throwable ignore) {}
+                                prevAnchors.remove(w);
+                            }
+                        }
+                    }
+                } catch (Throwable ignore) {}
+
+                // 2) Mount the cloud-resolved version so the session shows CLOUD, not GEO
+                if (hostedCloudId != null && pendingEggDocId != null) {
+                    addPersistentAnchorForSaved(
+                            pendingEggDocId,
+                            /*gp*/ null,
+                            /*localQ*/ null,
+                            /*cloudId*/ hostedCloudId,
+                            ModelType.STAR
+                    );
+                }
+
+                // 3) Patch Firestore
                 if (pendingEggDocId != null && hostedCloudId != null) {
                     Map<String, Object> patch = new HashMap<>();
                     patch.put("cloudStatus", "SUCCESS");
                     patch.put("cloudId", hostedCloudId);
                     patch.put("cloudHostedAt", FieldValue.serverTimestamp());
                     patch.put("cloudTtlDays", CLOUD_TTL_DAYS);
+                    patch.put("anchorType", "CLOUD");
 
                     FirebaseFirestore.getInstance().collection(EGGS)
                             .document(pendingEggDocId)
                             .update(patch)
                             .addOnSuccessListener(v -> uiShowMessage(
                                     "All set!",
-                                    "Egg saved and cloud hosted ✓\nTap OK to place again.",
+                                    "Saved and cloud hosted ✓\nTap OK to place again.",
                                     true))
                             .addOnFailureListener(e -> {
                                 Log.e(TAG, "Failed to patch egg with cloudId", e);
                                 uiShowMessage(
                                         "All set!",
-                                        "Egg saved and hosted ✓ (but metadata patch failed).\nTap OK to place again.",
+                                        "Saved and hosted ✓ (but metadata patch failed).\nTap OK to place again.",
                                         true);
                             });
                 } else {
-                    uiShowMessage("All set!", "Egg saved and hosted ✓\nTap OK to place again.", true);
+                    uiShowMessage("All set!", " saved and hosted ✓\nTap OK to place again.", true);
                 }
             }
         }
@@ -1400,17 +1543,26 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Anchor a = wrapped.getAnchor();
             if (a == null) continue;
 
+            // ---- distance-based culling (near + far) ----
+            if (lastCameraPose != null) {
+                float d = distance(a.getPose(), lastCameraPose);
+                // already used elsewhere, but keep as a safety so nothing renders at the glass
+                if (d < MIN_RENDER_DISTANCE_M) continue;
+                // only apply far cull to the persisted list to match mounting rules
+                if (isSavedList && d > MOUNT_RADIUS_M) continue;
+            }
+
             TrackingState st = a.getTrackingState();
             if (st == TrackingState.STOPPED) {
                 try { a.detach(); } catch (Throwable ignore) {}
                 lastStableT.remove(a);
-                list.remove(wrapped);
                 continue;
             }
             boolean isPaused   = (st == TrackingState.PAUSED);
             boolean isTracking = (st == TrackingState.TRACKING);
             if (!isPaused && !isTracking) continue;
 
+            // --- pose smoothing (translation only) ---
             Pose p = a.getPose();
             float[] t = p.getTranslation();
             float[] last = lastStableT.get(a);
@@ -1420,29 +1572,56 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 }
             }
             lastStableT.put(a, t.clone());
-            Pose pSmooth = new Pose(t, new float[]{p.qx(), p.qy(), p.qz(), p.qw()});
-            pSmooth.toMatrix(modelMatrix, 0);
 
-            float liftY = 0.03f + (isPaused ? 0.03f : 0f);
-            Matrix.translateM(modelMatrix, 0, 0f, liftY, 0f);
-
+            // --- choose render rotation ---
             final boolean isPuzzle = (wrapped.getModelType() == ModelType.PUZZLE);
-            float targetHeightM  = isPuzzle ? PUZZLE_WORLD_HEIGHT_M   : STAR_WORLD_HEIGHT_M;
-            float rawHeightUnits = isPuzzle ? PUZZLE_RAW_HEIGHT_UNITS : STAR_RAW_HEIGHT_UNITS;
-            float typeMult       = isPuzzle ? PUZZLE_SIZE_MULT        : STAR_SIZE_MULT;
-
-            // NEW: bigger only for saved stars (not previews)
-            float savedListMult  = 1.0f;
-            if (isSavedList) {
-                savedListMult = isPuzzle ? SAVED_PUZZLE_MULT : SAVED_STAR_MULT;
+            float[] renderQ;
+            if (ALWAYS_FACE_CAMERA && lastCameraPose != null && !isPuzzle) {
+                // Billboard YAW toward camera, keep model upright
+                float[] camT = lastCameraPose.getTranslation();
+                float yawDeg = (float) Math.toDegrees(Math.atan2(camT[0] - t[0], camT[2] - t[2]));
+                renderQ = quatMul(yawToQuaternion(yawDeg), MODEL_UPRIGHT_FIX);
+            } else {
+                // Use anchor's stored orientation (e.g., for PUZZLE)
+                renderQ = new float[]{ p.qx(), p.qy(), p.qz(), p.qw() };
             }
 
-            float s = (targetHeightM / Math.max(1e-6f, rawHeightUnits)) * typeMult * savedListMult * baseScale;
+            // Build model matrix from smoothed translation + chosen rotation
+            Pose rPose = new Pose(t, renderQ);
+            rPose.toMatrix(modelMatrix, 0);
+
+            // Keep previews slightly lifted; saved items stay exactly on the pose
+            float liftY = (isSavedList ? 0f : 0.02f) + (isPaused ? 0.03f : 0f);
+            Matrix.translateM(modelMatrix, 0, 0f, liftY, 0f);
+
+            // --- CONSTANT-PIXEL SIZE SCALING ---
+            float[] wp   = new float[]{ t[0], t[1], t[2], 1f };
+            float[] vpos = new float[4];
+            Matrix.multiplyMV(vpos, 0, viewMatrix, 0, wp, 0);
+            float zView = -vpos[2];                 // in-front points are negative in ARCore view space
+            zView = Math.max(0.05f, Math.min(50f, zView));
+
+            float fyNdc = projectionMatrix[5];
+            int  vh     = Math.max(1, viewportHeight);
+            float fyPx  = 0.5f * vh * fyNdc;
+
+            float targetPx = isPuzzle ? PUZZLE_TARGET_PX : STAR_TARGET_PX;
+            float targetHeightM = (targetPx * zView) / Math.max(1e-6f, fyPx);
+
+            float rawHeightUnits = isPuzzle ? PUZZLE_RAW_HEIGHT_UNITS : STAR_RAW_HEIGHT_UNITS;
+            float typeMult       = isPuzzle ? PUZZLE_SIZE_MULT        : STAR_SIZE_MULT;
+            float savedListMult  = (isSavedList ? (isPuzzle ? SAVED_PUZZLE_MULT : SAVED_STAR_MULT) : 1.0f);
+
+            float s = (targetHeightM / Math.max(1e-6f, rawHeightUnits))
+                    * typeMult * savedListMult * baseScale;
+
             Matrix.scaleM(modelMatrix, 0, s, s, s);
 
+            // --- MVP ---
             Matrix.multiplyMM(modelViewMatrix, 0, viewMatrix, 0, modelMatrix, 0);
             Matrix.multiplyMM(modelViewProjectionMatrix, 0, projectionMatrix, 0, modelViewMatrix, 0);
 
+            // --- draw ---
             Mesh[]   meshes  = isPuzzle ? puzzleMeshes  : starMeshes;
             Shader[] shaders = isPuzzle ? puzzleShaders : starShaders;
 
@@ -1479,23 +1658,24 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return false;
     }
 
-    private boolean hasActiveNoOcc(List<WrappedAnchor> list) {
-        long now = System.currentTimeMillis();
-        for (WrappedAnchor w : list) {
-            if (w != null && w.isOcclusionSuppressedAt(now)) return true;
-        }
-        return false;
-    }
-
-    // Kept (no longer used for hosting since IP is disabled)
-    private static boolean isInstantPlacementResolved(Trackable tr) {
+    private void forceBackCamera(Session session) {
+        // Filter for BACK camera configs
+        CameraConfigFilter filter = new CameraConfigFilter(session);
         try {
-            if (tr instanceof InstantPlacementPoint) {
-                InstantPlacementPoint ipp = (InstantPlacementPoint) tr;
-                return ipp.getTrackingMethod() == InstantPlacementPoint.TrackingMethod.FULL_TRACKING;
+            // Newer ARCore SDKs
+            filter.setFacingDirection(CameraConfig.FacingDirection.BACK);
+            List<CameraConfig> configs = session.getSupportedCameraConfigs(filter);
+            if (!configs.isEmpty()) session.setCameraConfig(configs.get(0));
+        } catch (NoSuchMethodError ignored) {
+            // Older SDKs: pick a BACK config manually
+            List<CameraConfig> all = session.getSupportedCameraConfigs(new CameraConfigFilter(session));
+            for (CameraConfig c : all) {
+                if (c.getFacingDirection() == CameraConfig.FacingDirection.BACK) {
+                    session.setCameraConfig(c);
+                    break;
+                }
             }
-        } catch (Throwable ignore) {}
-        return false;
+        }
     }
 
     // ====== Ray holder + helpers ======
@@ -1550,23 +1730,22 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void refreshRayPreview() {
         if (session == null || activeRay == null) return;
 
-        clearExistingPreview();
+        runOnGl(() -> {
+            clearExistingPreview();
 
-        Pose p = poseAlongRay(activeRay, rayDistanceM, rayForcedYawDeg);
-        Anchor a = session.createAnchor(p);
-        currentPlacedAnchor = a;
-        lastHitPose = p;
-        lastHitSurfaceType = "GEO_RAY";
+            Pose p = poseAlongRay(activeRay, rayDistanceM, rayForcedYawDeg);
+            Anchor a = session.createAnchor(p);
+            currentPlacedAnchor = a;
+            lastHitPose = p;
+            lastHitSurfaceType = "GEO_RAY";
 
-        long grace = System.currentTimeMillis() + 1500L;
+            long grace = System.currentTimeMillis() + 1500L;
+            inPuzzleFlow = true;
+            currentPreviewModel = ModelType.PUZZLE;
 
-        // Ray preview is for Puzzle only
-        inPuzzleFlow = true;
-        currentPreviewModel = ModelType.PUZZLE;
-
-        // IMPORTANT: use the 5-arg ctor so the model type is PUZZLE
-        wrappedAnchors.add(new WrappedAnchor(a, null, null, grace, ModelType.PUZZLE));
-        noOccUntilMs = grace;
+            wrappedAnchors.add(new WrappedAnchor(a, null, null, grace, ModelType.PUZZLE));
+            noOccUntilMs = grace;
+        });
     }
     // ====== /helpers ======
 
@@ -1678,11 +1857,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
             new AlertDialog.Builder(HelloArActivity.this)
-                    .setTitle("Undetectable surface")
+                    .setTitle("No surface found yet")
                     .setMessage(
-                            "We couldn’t detect a plane here.\n\n" +
-                                    "Do you want to place a Puzzle (magnifying glass) by location instead?\n" +
-                                    "Note: you’ll need to add at least one photo before saving."
+                            "We couldn’t find a surface here just yet.\n\n" +
+                                    "Would you like to place a Puzzle (magnifying glass) instead?\n\n" +
+                                    "Heads-up: you’ll need to add at least one photo before saving."
                     )
                     .setPositiveButton("Continue", (d, w) -> {
                         try { onContinue.run(); } catch (Throwable ignore) {}
@@ -1691,6 +1870,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                     .show();
         });
     }
+    // ===== REPLACE your placeAndOpenSheet(...) with this =====
     private void placeAndOpenSheet(
             boolean asPuzzle,
             Pose pose,
@@ -1718,10 +1898,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             lastHitSurfaceType = "GEO_RAY";
         }
 
-        // --- Create the visual preview anchor IMMEDIATELY (before opening the sheet) ---
+        // --- Create the visual preview anchor BEFORE opening the sheet ---
         long grace = System.currentTimeMillis() + 2500L;
         Anchor visualAnchor = session.createAnchor(pose);
         currentPlacedAnchor = visualAnchor;
+
 
         // Flow flags + preview model (STAR on meshes, PUZZLE on non-mesh)
         inPuzzleFlow = asPuzzle;
@@ -1746,7 +1927,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
         // If STAR and we have a hostable surface, remember the local anchor for Cloud hosting
         localAnchorForHosting = (!asPuzzle && hostableForCloud != null)
-                ? ((hostableForCloud.getHitPose().equals(pose)) ? visualAnchor : hostableForCloud.createAnchor())
+                ? (hostableForCloud.getHitPose().equals(pose) ? visualAnchor : hostableForCloud.createAnchor())
                 : null;
         hostState = HostState.IDLE;
 
@@ -1761,11 +1942,11 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         );
 
         // Compose HUD with geospatial info if available
-        Earth earth = null; GeospatialPose anchorGp = null, camGp = null;
-        try { earth = session.getEarth(); } catch (Throwable ignore) {}
-        if (earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
-            try { anchorGp = earth.getGeospatialPose(visualAnchor.getPose()); } catch (Throwable ignore) {}
-            try { camGp    = earth.getCameraGeospatialPose(); } catch (Throwable ignore) {}
+        Earth earthTmp = null; GeospatialPose anchorGp = null, camGp = null;
+        try { earthTmp = session.getEarth(); } catch (Throwable ignore) {}
+        if (earthTmp != null && earthTmp.getTrackingState() == TrackingState.TRACKING) {
+            try { anchorGp = earthTmp.getGeospatialPose(visualAnchor.getPose()); } catch (Throwable ignore) {}
+            try { camGp    = earthTmp.getCameraGeospatialPose(); } catch (Throwable ignore) {}
         }
         final String hud = (anchorGp != null)
                 ? String.format(Locale.US, "%s. Lat %.6f  Lng %.6f  Alt %.2f  (H ±%.1fm, V ±%.1fm)",
@@ -1780,24 +1961,30 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         });
 
+        inMetadataFlow = true;
+        uiHideStatus();
+
         // Open metadata sheet (immediately after preview is shown)
         EggCardSheet sheet = new EggCardSheet();
         sheet.setCancelable(false);
-
-        // NEW: let the sheet enforce the photo requirement (so the sheet stays open and preserves inputs)
+        // Let the sheet enforce ≥1 photo for puzzles
         sheet.setRequireAtLeastOnePhoto(asPuzzle);
 
         if (anchorGp != null) {
-            double headingDeg = goodHeadingDeg(camGp, lastGoodGeoPose, headGate());
+            final double headingDeg = goodHeadingDeg(camGp, lastGoodGeoPose, headGate());
+            final double hAccVal    = anchorGp.getHorizontalAccuracy();
+            final double vAccVal    = anchorGp.getVerticalAccuracy();
+            final double headAccVal = (camGp != null ? camGp.getHeadingAccuracy() : Double.NaN);
+
+            // Your project expects 7 args (no timestamp)
             sheet.setGeoPoseSnapshot(new EggCardSheet.GeoPoseSnapshot(
                     anchorGp.getLatitude(),
                     anchorGp.getLongitude(),
                     anchorGp.getAltitude(),
                     headingDeg,
-                    anchorGp.getHorizontalAccuracy(),
-                    anchorGp.getVerticalAccuracy(),
-                    (camGp != null ? camGp.getHeadingAccuracy() : Double.NaN),
-                    System.currentTimeMillis()
+                    hAccVal,
+                    vAccVal,
+                    headAccVal
             ));
         }
 
@@ -1805,20 +1992,21 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             @Override
             public void onSave(String title, String description, List<Uri> photoUris,
                                @Nullable Uri audioUri, @Nullable EggCardSheet.GeoPoseSnapshot geoSnapshot) {
-                // Validation (including ≥1 photo for puzzles) is handled inside the sheet.
-                // If we got here, the form is valid. Proceed to save without re-opening the sheet.
-                proceedToSave(title, description, photoUris, audioUri, cameraForSave);
+                sheet.dismissAllowingStateLoss();
+                // Pass snapshot through to new proceedToSave(...)
+                proceedToSave(title, description, photoUris, audioUri, cameraForSave, geoSnapshot);
             }
 
             @Override
             public void onCancel() {
-                // User changed their mind: remove preview so they can tap elsewhere
-                try { clearExistingPreview(); } catch (Throwable ignore) {}
+                // Remove preview so the user can tap elsewhere
+                try { clearExistingPreviewAsync(); } catch (Throwable ignore) {}
                 inPuzzleFlow = false;
                 placementModeActive = true;
                 readyPromptShown = true;
                 localAnchorForHosting = null;
                 hostState = HostState.IDLE;
+                inMetadataFlow = false;
                 hideStatus();
             }
         });
@@ -1829,8 +2017,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             }
         });
     }
-
-
     private void startHostingCloudAnchor(Anchor local, @Nullable String eggDocIdToPatch) {
         if (local == null || session == null) return;
 
@@ -1923,6 +2109,8 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
     private void configureSession() {
         if (session == null) return;
+
+        forceBackCamera(session);
 
         Config config = session.getConfig();
 
@@ -2033,6 +2221,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                 });
     }
 
+
     private static float[] yawToQuaternionZ(float yawDeg) {
         float r = (float) Math.toRadians(yawDeg);
         float s = (float) Math.sin(r * 0.5f), c = (float) Math.cos(r * 0.5f);
@@ -2113,6 +2302,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         statusDlg = CenterStatusDialogFragment.showOnce(
                 getSupportFragmentManager(),
                 () -> {
+                    // We’ve reached the end of the flow (OK tapped / dialog dismissed)
+                    isSavingFlow = false;
+
                     try {
                         if (currentPlacedAnchor != null) {
                             currentPlacedAnchor.detach();
@@ -2143,7 +2335,19 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private void uiShowMessage(String title, String message, boolean okButton) {
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
-            boolean endOfFlow = title != null && (title.startsWith("All set") || title.startsWith("Not hosted") || title.startsWith("Hosting failed") || title.startsWith("Ready") || title.startsWith("Saved (geospatial)") || title.startsWith("Save (geospatial) failed") || title.startsWith("Need location"));
+
+            boolean endOfFlow =
+                    (isSavingFlow && okButton) ||  // any OK while saving ends the flow
+                            (title != null && (
+                                    title.startsWith("All set")
+                                            || title.startsWith("Saved")
+                                            || title.startsWith("Hosting failed")
+                                            || title.startsWith("Upload failed")
+                                            || title.startsWith("Save failed")
+                                            || title.startsWith("Not hosted")
+                                            || title.startsWith("Ready")
+                            ));
+
             if (endOfFlow) ensureStatusShownAndRearm();
             else ensureStatusShownNoReset();
 
@@ -2244,13 +2448,21 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         virtualObjectAlbedoTexture = t;
     }
 
-    private void mountPreviousEggsFromSnapshot(Earth earth, GeospatialPose camGp,
-                                               List<DocumentSnapshot> docs, boolean cellFiltered) {
-        int added = 0;
-        final long grace = System.currentTimeMillis() + 2500L;
+    private void mountPreviousEggsFromSnapshot(
+            Earth earth,
+            GeospatialPose camGp,
+            List<DocumentSnapshot> docs,
+            boolean cellFiltered
+    ) {
+        int added = 0; // NOTE: additions happen on the GL thread; this counter is best-effort (SHOW_LOAD_TOAST is false by default).
+
+        if (earth == null || earth.getTrackingState() != TrackingState.TRACKING || camGp == null) {
+            return;
+        }
 
         for (DocumentSnapshot snap : docs) {
-            if (mountedPrevDocIds.contains(snap.getId())) continue;
+            final String docId = snap.getId();
+            if (mountedPrevDocIds.contains(docId)) continue;
 
             // Pull fields
             Double lat = (snap.getGeoPoint("geo") != null) ? snap.getGeoPoint("geo").getLatitude() : null;
@@ -2261,9 +2473,9 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Double heading = snap.getDouble("heading");
             if (heading == null) heading = 0.0;
 
-            // NEW: choose STAR vs PUZZLE based on saved "model" field
+            // Choose STAR vs PUZZLE based on saved "model" field
             String modelField = snap.getString("model"); // "star" or "puzzle"
-            ModelType mType = (modelField != null && modelField.equalsIgnoreCase("puzzle"))
+            final ModelType mType = (modelField != null && modelField.equalsIgnoreCase("puzzle"))
                     ? ModelType.PUZZLE : ModelType.STAR;
 
             // Prefer saved local rotation; else face camera heading + keep upright
@@ -2272,23 +2484,33 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             Float lqz = (snap.getDouble("localQz") != null) ? snap.getDouble("localQz").floatValue() : null;
             Float lqw = (snap.getDouble("localQw") != null) ? snap.getDouble("localQw").floatValue() : null;
 
-            float[] q = (lqx != null && lqy != null && lqz != null && lqw != null)
+            final float[] q = (lqx != null && lqy != null && lqz != null && lqw != null)
                     ? new float[]{ lqx, lqy, lqz, lqw }
                     : quatMul(yawToQuaternion(heading.floatValue()), MODEL_UPRIGHT_FIX);
 
             // Cloud-only fallback if no geo
             if (lat == null || lng == null) {
                 if (cloudId != null && !cloudId.isEmpty()) {
-                    try {
-                        Anchor a = session.resolveCloudAnchor(cloudId);
-                        prevAnchors.add(new WrappedAnchor(a, null, snap.getId(), grace, mType));
-                        mountedPrevDocIds.add(snap.getId());
-                        added++;
-                    } catch (Throwable t) {
-                        Log.w(TAG, "Failed to resolve cloud-only egg " + snap.getId(), t);
-                    }
+                    final String fCloudId = cloudId;
+                    runOnGl(() -> {
+                        try {
+                            if (session == null) return;
+                            if (mountedPrevDocIds.contains(docId)) return;
+                            Anchor a = session.resolveCloudAnchor(fCloudId);
+                            long grace = System.currentTimeMillis() + 2500L;
+                            prevAnchors.add(new WrappedAnchor(a, null, docId, grace, mType));
+                            mountedPrevDocIds.add(docId);
+                        } catch (Throwable t) {
+                            Log.w(TAG, "Failed to resolve cloud-only egg " + docId, t);
+                        }
+                    });
                 }
                 continue;
+            }
+
+            // ---- Distance gate: only mount items within MOUNT_RADIUS_M of the camera ----
+            if (!isWithinMeters(camGp.getLatitude(), camGp.getLongitude(), lat, lng, MOUNT_RADIUS_M)) {
+                continue; // skip far-away eggs so they don't clutter the view
             }
 
             // Don't mount right at the camera position
@@ -2303,50 +2525,102 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
                         || type.equalsIgnoreCase("GEO+CLOUD")
                         || type.equalsIgnoreCase("GEO_PUZZLE")));
 
+                final double flat = lat, flng = lng;
+                final Double falt = alt; // may be null
+                final String fCloudId = cloudId;
+
                 if (wantsGeo && alt != null) {
-                    Anchor a = earth.createAnchor(lat, lng, alt, q[0], q[1], q[2], q[3]);
-                    prevAnchors.add(new WrappedAnchor(a, null, snap.getId(), grace, mType));
-                    mountedPrevDocIds.add(snap.getId());
+                    runOnGl(() -> {
+                        try {
+                            if (earth.getTrackingState() != TrackingState.TRACKING) return;
+                            if (mountedPrevDocIds.contains(docId)) return;
+                            Anchor a = earth.createAnchor(flat, flng, falt, q[0], q[1], q[2], q[3]);
+                            long grace = System.currentTimeMillis() + 2500L;
+                            prevAnchors.add(new WrappedAnchor(a, null, docId, grace, mType));
+                            mountedPrevDocIds.add(docId);
+                        } catch (Throwable t) {
+                            Log.w(TAG, "earth.createAnchor failed for " + docId, t);
+                        }
+                    });
                     added++;
                 } else if (wantsGeo) {
-                    final float approxAlt = (float) (alt != null ? alt : camGp.getAltitude());
-                    earth.resolveAnchorOnTerrainAsync(
-                            lat, lng, approxAlt, q[0], q[1], q[2], q[3],
-                            (terrainAnchor, state) -> {
-                                if (state == Anchor.TerrainAnchorState.SUCCESS) {
-                                    try {
-                                        prevAnchors.add(new WrappedAnchor(terrainAnchor, null, snap.getId(),
-                                                System.currentTimeMillis() + 2500L, mType));
-                                        mountedPrevDocIds.add(snap.getId());
-                                    } catch (Throwable ignore) { }
-                                } else {
-                                    if (terrainAnchor != null) terrainAnchor.detach();
-                                }
-                            });
+                    final float approxAlt = (float) (falt != null ? falt : camGp.getAltitude());
+                    runOnGl(() -> {
+                        try {
+                            if (earth.getTrackingState() != TrackingState.TRACKING) return;
+                            earth.resolveAnchorOnTerrainAsync(
+                                    flat, flng, approxAlt, q[0], q[1], q[2], q[3],
+                                    (terrainAnchor, state) -> runOnGl(() -> {
+                                        if (state == Anchor.TerrainAnchorState.SUCCESS && terrainAnchor != null) {
+                                            try {
+                                                if (mountedPrevDocIds.contains(docId)) {
+                                                    try { terrainAnchor.detach(); } catch (Throwable ignore) {}
+                                                    return;
+                                                }
+                                                long grace = System.currentTimeMillis() + 2500L;
+                                                prevAnchors.add(new WrappedAnchor(terrainAnchor, null, docId, grace, mType));
+                                                mountedPrevDocIds.add(docId);
+                                            } catch (Throwable ignore) { }
+                                        } else {
+                                            if (terrainAnchor != null) {
+                                                try { terrainAnchor.detach(); } catch (Throwable ignore) {}
+                                            }
+                                        }
+                                    })
+                            );
+                        } catch (Throwable t) {
+                            Log.w(TAG, "resolveAnchorOnTerrainAsync failed for " + docId, t);
+                        }
+                    });
+                    added++;
                 } else if (wantsCloudOnly) {
-                    Anchor a = session.resolveCloudAnchor(cloudId);
-                    prevAnchors.add(new WrappedAnchor(a, null, snap.getId(), grace, mType));
-                    mountedPrevDocIds.add(snap.getId());
+                    runOnGl(() -> {
+                        try {
+                            if (session == null) return;
+                            if (mountedPrevDocIds.contains(docId)) return;
+                            Anchor a = session.resolveCloudAnchor(fCloudId);
+                            long grace = System.currentTimeMillis() + 2500L;
+                            prevAnchors.add(new WrappedAnchor(a, null, docId, grace, mType));
+                            mountedPrevDocIds.add(docId);
+                        } catch (Throwable t) {
+                            Log.w(TAG, "resolveCloudAnchor failed for " + docId, t);
+                        }
+                    });
                     added++;
                 } else {
                     // Generic fallback: try terrain with our rotation
-                    final float approxAlt = (float) (alt != null ? alt : camGp.getAltitude());
-                    earth.resolveAnchorOnTerrainAsync(
-                            lat, lng, approxAlt, q[0], q[1], q[2], q[3],
-                            (terrainAnchor, state) -> {
-                                if (state == Anchor.TerrainAnchorState.SUCCESS) {
-                                    try {
-                                        prevAnchors.add(new WrappedAnchor(terrainAnchor, null, snap.getId(),
-                                                System.currentTimeMillis() + 2500L, mType));
-                                        mountedPrevDocIds.add(snap.getId());
-                                    } catch (Throwable ignore) { }
-                                } else {
-                                    if (terrainAnchor != null) terrainAnchor.detach();
-                                }
-                            });
+                    final float approxAlt = (float) (falt != null ? falt : camGp.getAltitude());
+                    runOnGl(() -> {
+                        try {
+                            if (earth.getTrackingState() != TrackingState.TRACKING) return;
+                            earth.resolveAnchorOnTerrainAsync(
+                                    flat, flng, approxAlt, q[0], q[1], q[2], q[3],
+                                    (terrainAnchor, state) -> runOnGl(() -> {
+                                        if (state == Anchor.TerrainAnchorState.SUCCESS && terrainAnchor != null) {
+                                            try {
+                                                if (mountedPrevDocIds.contains(docId)) {
+                                                    try { terrainAnchor.detach(); } catch (Throwable ignore) {}
+                                                    return;
+                                                }
+                                                long grace = System.currentTimeMillis() + 2500L;
+                                                prevAnchors.add(new WrappedAnchor(terrainAnchor, null, docId, grace, mType));
+                                                mountedPrevDocIds.add(docId);
+                                            } catch (Throwable ignore) { }
+                                        } else {
+                                            if (terrainAnchor != null) {
+                                                try { terrainAnchor.detach(); } catch (Throwable ignore) {}
+                                            }
+                                        }
+                                    })
+                            );
+                        } catch (Throwable t) {
+                            Log.w(TAG, "resolveAnchorOnTerrainAsync (fallback) failed for " + docId, t);
+                        }
+                    });
+                    added++;
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "Failed to mount previous egg " + snap.getId(), t);
+                Log.w(TAG, "Failed to mount previous egg " + docId, t);
             }
         }
 
@@ -2391,13 +2665,35 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         return new float[]{sx, sy, w};
     }
 
+    private float pickRadiusPxFor(WrappedAnchor w) {
+        // Base radius in px (density-safe)
+        float base = dpToPx(PICK_RADIUS_DP);
+        if (w == null) return base;
+
+        // With constant-pixel sizing, estimate the model’s final on-screen height directly
+        final boolean isPuzzle = (w.getModelType() == ModelType.PUZZLE);
+        float targetPx      = isPuzzle ? PUZZLE_TARGET_PX   : STAR_TARGET_PX;
+        float typeMult      = isPuzzle ? PUZZLE_SIZE_MULT   : STAR_SIZE_MULT;
+        float savedListMult = (w.getDocId() != null) ? (isPuzzle ? SAVED_PUZZLE_MULT : SAVED_STAR_MULT) : 1f;
+
+        // This approximates the actual rendered pixel height (see drawAnchorsList scaling)
+        float approxOnScreenPx = targetPx * typeMult * savedListMult * MODEL_BASE_SCALE;
+
+        // Blend base radius with a fraction of the on-screen height, then clamp
+        float r = base + 0.6f * approxOnScreenPx;
+        float min = dpToPx(36);
+        float max = dpToPx(160);
+        if (r < min) r = min;
+        if (r > max) r = max;
+        return r;
+    }
+
     /** Find the nearest placed anchor under the tap (both saved + preview). */
     @Nullable
     private WrappedAnchor pickAnchorAtTap(float xPx, float yPx) {
-        WrappedAnchor best = null;
-        float bestD2 = Float.MAX_VALUE;
+        WrappedAnchor bestSaved = null, bestPreview = null;
+        float bestSavedD2 = Float.MAX_VALUE, bestPreviewD2 = Float.MAX_VALUE;
 
-        // Check saved first so they are preferred if stacked
         List<WrappedAnchor> all = new ArrayList<>();
         all.addAll(prevAnchors);
         all.addAll(wrappedAnchors);
@@ -2413,27 +2709,49 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
 
             float dx = scr[0] - xPx, dy = scr[1] - yPx;
             float d2 = dx*dx + dy*dy;
-            if (d2 <= PICK_RADIUS_PX * PICK_RADIUS_PX && d2 < bestD2) {
-                bestD2 = d2;
-                best   = w;
+
+            float radius = pickRadiusPxFor(w);
+            if (d2 > radius * radius) continue;
+
+            if (w.getDocId() != null) {
+                if (d2 < bestSavedD2) { bestSavedD2 = d2; bestSaved = w; }
+            } else {
+                if (d2 < bestPreviewD2) { bestPreviewD2 = d2; bestPreview = w; }
             }
         }
-        selectedAnchor = best;
-        return best;
+        selectedAnchor = (bestSaved != null) ? bestSaved : bestPreview;
+        return selectedAnchor;
     }
     private void showAnchorInfo(WrappedAnchor w) {
-        final String fallbackTitle = (w.getModelType() == ModelType.PUZZLE) ? "Puzzle" : "Star";
+        // PATCH 6b: if user tapped a preview but a saved anchor is colocated, redirect to the saved one
+        WrappedAnchor resolved = w;
+        try {
+            if (resolved != null && (resolved.getDocId() == null || resolved.getDocId().isEmpty())) {
+                Anchor a = resolved.getAnchor();
+                if (a != null) {
+                    Pose p = a.getPose();
+                    WrappedAnchor nearSaved = findNearbyAnchor(p, 0.25f); // within ~25 cm
+                    if (nearSaved != null && nearSaved.getDocId() != null) {
+                        resolved = nearSaved; // redirect to saved
+                    }
+                }
+            }
+        } catch (Throwable ignore) {}
 
-        // Update the small HUD line as a quick visual confirmation
+        // Use an effectively-final reference for any lambdas below
+        final WrappedAnchor sel = resolved;
+        final String fallbackTitle = (sel.getModelType() == ModelType.PUZZLE) ? "Puzzle" : "Star";
+
+        // HUD confirmation
         runOnUiThread(() -> {
             if (poseInfoCard != null) {
                 poseInfoCard.setVisibility(View.VISIBLE);
-                poseInfoCard.setText("Selected: " + fallbackTitle + (w.getDocId() != null ? " (saved)" : " (preview)"));
+                poseInfoCard.setText("Selected: " + fallbackTitle + (sel.getDocId() != null ? " (saved)" : " (preview)"));
             }
         });
 
-        // If it's a saved egg, fetch its metadata; otherwise show a simple dialog
-        String docId = w.getDocId();
+        // If saved, fetch details; else show preview notice
+        String docId = sel.getDocId();
         if (docId == null || docId.isEmpty()) {
             runOnUiThread(() -> new androidx.appcompat.app.AlertDialog.Builder(HelloArActivity.this)
                     .setTitle(fallbackTitle)
@@ -2461,38 +2779,46 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     // Canonical 5-arg version (lets us choose STAR vs PUZZLE)
+    // REPLACE your current addPersistentAnchorForSaved(...) with this GL-wrapped version:
     private void addPersistentAnchorForSaved(
             String docId,
             @Nullable GeospatialPose gp,
             @Nullable float[] localQ,
             @Nullable String cloudId,
             ModelType modelType) {
-        try {
-            if (session == null) return;
 
-            Anchor a = null;
-            Earth earth = null;
-            try { earth = session.getEarth(); } catch (Throwable ignore) {}
+        runOnGl(() -> {
+            try {
+                if (session == null) return;
 
-            if (gp != null && earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
-                float[] q = (localQ != null) ? localQ : new float[]{0,0,0,1};
-                a = earth.createAnchor(
-                        gp.getLatitude(), gp.getLongitude(), gp.getAltitude(),
-                        q[0], q[1], q[2], q[3]);
-            } else if (cloudId != null && !cloudId.isEmpty()) {
-                a = session.resolveCloudAnchor(cloudId);
-            } else if (currentPlacedAnchor != null) {
-                a = session.createAnchor(currentPlacedAnchor.getPose());
+                Anchor a = null;
+                Earth earth = null;
+                try { earth = session.getEarth(); } catch (Throwable ignore) {}
+
+                if (gp != null && earth != null && earth.getTrackingState() == TrackingState.TRACKING) {
+                    float[] q = (localQ != null) ? localQ : new float[]{0,0,0,1};
+                    a = earth.createAnchor(
+                            gp.getLatitude(), gp.getLongitude(), gp.getAltitude(),
+                            q[0], q[1], q[2], q[3]);
+                } else if (cloudId != null && !cloudId.isEmpty()) {
+                    a = session.resolveCloudAnchor(cloudId);
+                } else if (currentPlacedAnchor != null) {
+                    // Fallback: clone the preview pose so something persists immediately
+                    a = session.createAnchor(currentPlacedAnchor.getPose());
+                }
+
+                if (a != null) {
+                    long grace = System.currentTimeMillis() + 2500L;
+                    prevAnchors.add(new WrappedAnchor(a, null, docId, grace, modelType));
+                    mountedPrevDocIds.add(docId);
+                } else {
+                    Log.w(TAG, "addPersistentAnchorForSaved: no anchor created (gp="
+                            + (gp != null) + ", cloudId=" + cloudId + ")");
+                }
+            } catch (Throwable t) {
+                Log.w(TAG, "addPersistentAnchorForSaved failed", t);
             }
-
-            if (a != null) {
-                long grace = System.currentTimeMillis() + 2500L;
-                prevAnchors.add(new WrappedAnchor(a, null, docId, grace, modelType));
-                mountedPrevDocIds.add(docId);
-            }
-        } catch (Throwable t) {
-            Log.w(TAG, "addPersistentAnchorForSaved failed", t);
-        }
+        });
     }
 
 

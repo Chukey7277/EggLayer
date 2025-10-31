@@ -59,24 +59,42 @@ public class EggCardSheet extends BottomSheetDialogFragment {
 
     // ---------- GeoPose snapshot ----------
     public static class GeoPoseSnapshot implements Serializable {
+        // Canonical names (nice to read)
         public double latitude, longitude, altitude, heading;
         public double horizontalAccuracy, verticalAccuracy, headingAccuracy;
         public long timestampMillis;
 
+        // Back-compat aliases used by HelloArActivity
+        public double lat, lng, alt, hAcc, vAcc;
+
         public GeoPoseSnapshot() {}
-        public GeoPoseSnapshot(
-                double latitude, double longitude, double altitude,
-                double heading, double horizontalAccuracy,
-                double verticalAccuracy, double headingAccuracy,
-                long timestampMillis) {
-            this.latitude = latitude;
-            this.longitude = longitude;
-            this.altitude = altitude;
+
+        // 7-arg ctor (matches HelloArActivity usage)
+        public GeoPoseSnapshot(double lat, double lng, double alt,
+                               double heading,
+                               double hAcc, double vAcc, double headingAccuracy) {
+            setAll(lat, lng, alt, heading, hAcc, vAcc, headingAccuracy, System.currentTimeMillis());
+        }
+
+        // 8-arg ctor (if you ever want to pass timestamp explicitly)
+        public GeoPoseSnapshot(double lat, double lng, double alt,
+                               double heading,
+                               double hAcc, double vAcc, double headingAccuracy,
+                               long timestampMillis) {
+            setAll(lat, lng, alt, heading, hAcc, vAcc, headingAccuracy, timestampMillis);
+        }
+
+        private void setAll(double lat, double lng, double alt,
+                            double heading, double hAcc, double vAcc,
+                            double headAcc, long ts) {
+            this.latitude = this.lat = lat;
+            this.longitude = this.lng = lng;
+            this.altitude = this.alt = alt;
             this.heading = heading;
-            this.horizontalAccuracy = horizontalAccuracy;
-            this.verticalAccuracy = verticalAccuracy;
-            this.headingAccuracy = headingAccuracy;
-            this.timestampMillis = timestampMillis;
+            this.horizontalAccuracy = this.hAcc = hAcc;
+            this.verticalAccuracy = this.vAcc = vAcc;
+            this.headingAccuracy = headAcc;
+            this.timestampMillis = ts;
         }
     }
 
@@ -501,9 +519,12 @@ public class EggCardSheet extends BottomSheetDialogFragment {
         sttLauncher = registerForActivityResult(
                 new ActivityResultContracts.StartActivityForResult(),
                 res -> {
-                    if (res.getResultCode() != Activity.RESULT_OK || res.getData() == null) return;
-                    ArrayList<String> list = res.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+                    if (res == null || res.getResultCode() != Activity.RESULT_OK || res.getData() == null) return;
+
+                    ArrayList<String> list =
+                            res.getData().getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
                     if (list == null || list.isEmpty() || pendingTapTarget == null) return;
+
                     String text = list.get(0);
                     if (pendingTapTarget == VoiceTarget.TITLE) {
                         titleInput.setText(text);
