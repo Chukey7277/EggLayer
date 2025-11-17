@@ -39,6 +39,35 @@
   <string name="cd_dictate_description">Dictate description</string>
   <string name="cd_cancel">Cancel and close</string>
   <string name="cd_save">Save this?</string>
+  <!-- Row buttons -->
+  <string name="nearby_row_info">Details</string>
+  <string name="nearby_row_select">Select</string>
+
+  <!-- Content descriptions (use with String.format and the anchor title) -->
+  <string name="cd_nearby_info">Details for %1$s</string>
+  <string name="cd_nearby_select">Select %1$s anchor</string>
+
+  <!-- Types -->
+  <string name="nearby_anchor_star">Star</string>
+  <string name="nearby_anchor_puzzle">Puzzle</string>
+
+  <!-- Sheet -->
+  <string name="nearby_sheet_title">Nearby anchors</string>
+  <string name="nearby_sheet_empty">No anchors nearby yet.</string>
+  <string name="close">Close</string>
+
+  <!-- Distance formatting (pick m or km in code) -->
+  <string name="nearby_distance_m">~%1$.1f m • %2$s</string>
+  <string name="nearby_distance_km">~%1$.2f km • %2$s</string>
+
+  <!-- FAB (list button) -->
+  <string name="nearby_fab_cd">Show nearby anchors</string>
+
+  <string name="nearby_row_thumbnail">Anchor thumbnail</string>
+  <string name="anchor_image">Anchor image</string>
+
+  <!-- Generic -->
+  <string name="ok">OK</string>
 
 
   <string name="arcore_api_key">AIzaSyCTKfPYnVPRdR_NXhmTjt1iCYi4jJBOQ4A</string>

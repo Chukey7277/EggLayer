@@ -32,7 +32,7 @@
                     android:layout_height="wrap_content"
                     android:letterSpacing="0.02"
                     android:paddingBottom="6dp"
-                    android:text="Save this Egg?"
+                    android:text="Save this?"
                     android:textSize="22sp"
                     android:textStyle="bold" />
 

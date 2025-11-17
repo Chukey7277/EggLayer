@@ -39,17 +39,17 @@
 
         <TextView
             android:id="@+id/instructionsText"
-            android:layout_width="match_parent"
+            android:layout_width="331dp"
             android:layout_height="wrap_content"
             android:alpha="0.95"
             android:fontFamily="sans-serif"
             android:letterSpacing="0.02"
             android:lineSpacingExtra="12dp"
             android:paddingStart="24dp"
-            android:paddingEnd="24dp"
             android:paddingTop="24dp"
+            android:paddingEnd="24dp"
             android:paddingBottom="24dp"
-            android:text="1. Point your camera at the ground\n2. Wait for Earth tracking \n3. Tap to place your model\n4. Add description and photos\n5. Save your model🙂"
+            android:text="1. Point your camera toward the ground\n2. Wait a few moments for tracking\n3. Tap to place your model\n4. Add a description and photos\n5. Save your model 🙂"
             android:textColor="@color/blue_text_primary"
             android:textSize="16sp" />
     </androidx.cardview.widget.CardView>
