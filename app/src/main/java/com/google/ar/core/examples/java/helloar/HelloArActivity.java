@@ -340,6 +340,17 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     private volatile boolean internetOk = true;                // last-known internet status
     private long lastOfflineHintAt = 0L;
     private static final long OFFLINE_HINT_COOLDOWN_MS = 8000L;
+    // Turn model's +X to +Z so the face points at camera. Flip sign if needed.
+    private static final float[] PUZZLE_FACE_FIX = quatAxisAngle(0, 1, 0, -90f);
+    // Make the PUZZLE (question mark) face the camera too.
+// If it still looks sideways, try 90f or 180f here.
+    private static final float PUZZLE_FACE_YAW_DEG = -90f;
+    private static float yawFromQuaternion(float[] q) {
+        // yaw (around +Y), same convention as yawToQuaternion()
+        float siny_cosp = 2f * (q[3]*q[1] + q[0]*q[2]);
+        float cosy_cosp = 1f - 2f * (q[1]*q[1] + q[2]*q[2]);
+        return (float) Math.atan2(siny_cosp, cosy_cosp); // radians
+    }
 
     // If you prefer a single global orientation (not facing camera), use this instead:
     private static final float[] FIXED_WORLD_Q = quatMul(yawToQuaternion(0f), MODEL_UPRIGHT_FIX);
@@ -986,9 +997,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
         placementModeActive = false;
         statusModalPinned = false;
 
-//        if (now >= suppressProgressUntilMs) {
-//            uiShowProgress("Saving", "Saving details…", null);
-//        }
         continueProceedToSave(title, description, photoUris, audioUri, cameraForSave, snapshot);
     }
 
@@ -1758,6 +1766,7 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             lastStableT.put(a, t.clone());
 
             // --- choose render rotation ---
+            // --- choose render rotation ---
             final boolean isPuzzle = (wrapped.getModelType() == ModelType.PUZZLE);
             float[] renderQ;
             if (ALWAYS_FACE_CAMERA && lastCameraPose != null && !isPuzzle) {
@@ -1767,7 +1776,6 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             } else {
                 renderQ = new float[]{ p.qx(), p.qy(), p.qz(), p.qw() };
             }
-
             // Build model matrix
             Pose rPose = new Pose(t, renderQ);
             rPose.toMatrix(modelMatrix, 0);
@@ -2971,23 +2979,25 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
 
     private float pickRadiusPxFor(WrappedAnchor w) {
-        // Base radius in px (density-safe)
-        float base = dpToPx(PICK_RADIUS_DP);
+        float base = dpToPx(PICK_RADIUS_DP);         // ~48dp baseline
         if (w == null) return base;
 
-        // With constant-pixel sizing, estimate the model’s final on-screen height directly
         final boolean isPuzzle = (w.getModelType() == ModelType.PUZZLE);
-        float targetPx      = isPuzzle ? PUZZLE_TARGET_PX   : STAR_TARGET_PX;
-        float typeMult      = isPuzzle ? PUZZLE_SIZE_MULT   : STAR_SIZE_MULT;
-        float savedListMult = (w.getDocId() != null) ? (isPuzzle ? SAVED_PUZZLE_MULT : SAVED_STAR_MULT) : 1f;
+        float targetPx = isPuzzle ? PUZZLE_TARGET_PX : STAR_TARGET_PX;
+        float typeMult = isPuzzle ? PUZZLE_SIZE_MULT : STAR_SIZE_MULT;
+        float savedMult = (w.getDocId() != null)
+                ? (isPuzzle ? SAVED_PUZZLE_MULT : SAVED_STAR_MULT)
+                : 1f;
 
-        // This approximates the actual rendered pixel height (see drawAnchorsList scaling)
-        float approxOnScreenPx = targetPx * typeMult * savedListMult * MODEL_BASE_SCALE;
+        // Approx on-screen height you already use for sizing
+        float approxOnScreenPx = targetPx * typeMult * savedMult * MODEL_BASE_SCALE;
 
-        // Blend base radius with a fraction of the on-screen height, then clamp
-        float r = base + 0.6f * approxOnScreenPx;
-        float min = dpToPx(36);
-        float max = dpToPx(160);
+        // Be much more generous for magnifier (lens is offset from pivot)
+        float factor = isPuzzle ? 1.25f : 0.60f;
+        float r = base + factor * approxOnScreenPx;
+
+        float min = dpToPx(isPuzzle ? 120 : 36);
+        float max = dpToPx(isPuzzle ? 260 : 160);
         if (r < min) r = min;
         if (r > max) r = max;
         return r;
@@ -3015,20 +3025,60 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
             if (scr == null) continue;
 
             float dx = scr[0] - xPx, dy = scr[1] - yPx;
-            float d2 = dx*dx + dy*dy;
-
+            float d2 = dx * dx + dy * dy;
             float radius = pickRadiusPxFor(w);
-            if (d2 > radius * radius) continue;
+            float r2 = radius * radius;
+
+            boolean inside = d2 <= r2;
+            float usedD2 = d2;
+
+            // If miss and this is a PUZZLE (magnifier), also test a hotspot near the lens ring.
+            if (!inside && w.getModelType() == ModelType.PUZZLE) {
+                // Estimate distance-scaled model height (same math as your constant-pixel sizing)
+                float[] wp = new float[]{ p.tx(), p.ty(), p.tz(), 1f };
+                float[] vpos = new float[4];
+                Matrix.multiplyMV(vpos, 0, viewMatrix, 0, wp, 0);
+                float zView = -vpos[2];
+                zView = Math.max(0.05f, Math.min(50f, zView));
+                float fyPx = 0.5f * Math.max(1, viewportHeight) * projectionMatrix[5];
+                float targetHeightM = (PUZZLE_TARGET_PX * zView) / Math.max(1e-6f, fyPx);
+
+                // Lens center is ~40% of model height forward from pivot; tweak 0.30–0.50f if needed
+                float lensOffsetM = 0.40f * targetHeightM;
+
+                // Extract yaw from quaternion (same convention as yawToQuaternion)
+                float[] q = new float[]{ p.qx(), p.qy(), p.qz(), p.qw() };
+                float siny_cosp = 2f * (q[3]*q[1] + q[0]*q[2]);
+                float cosy_cosp = 1f - 2f * (q[1]*q[1] + q[2]*q[2]);
+                float yaw = (float) Math.atan2(siny_cosp, cosy_cosp); // radians
+
+                // Lens hotspot world position (forward in XZ from pivot)
+                float lx = p.tx() + (float) Math.sin(yaw) * lensOffsetM;
+                float ly = p.ty();
+                float lz = p.tz() + (float) Math.cos(yaw) * lensOffsetM;
+
+                float[] scr2 = worldToScreenPx(lx, ly, lz);
+                if (scr2 != null) {
+                    float dx2 = scr2[0] - xPx, dy2 = scr2[1] - yPx;
+                    float d2Lens = dx2 * dx2 + dy2 * dy2;
+                    if (d2Lens <= r2) {
+                        inside = true;
+                        usedD2 = d2Lens; // use the better (closer) match for tie-breaking
+                    }
+                }
+            }
+
+            if (!inside) continue;
 
             // Prioritize the current user's recent placement
             if (w.getDocId() != null && currentSessionRecentDocIds.contains(w.getDocId())) {
-                if (d2 < bestRecentD2) {
-                    bestRecentD2 = d2;
+                if (usedD2 < bestRecentD2) {
+                    bestRecentD2 = usedD2;
                     bestRecent = w;
                 }
             } else {
-                if (d2 < bestOtherD2) {
-                    bestOtherD2 = d2;
+                if (usedD2 < bestOtherD2) {
+                    bestOtherD2 = usedD2;
                     bestOther = w;
                 }
             }
@@ -3429,20 +3479,28 @@ public class HelloArActivity extends AppCompatActivity implements SampleRender.R
     }
     private void maybeScanNearbyForButton() {
         if (btnNearby == null) return;
+
         long now = System.currentTimeMillis();
         if (now - lastNearbyScanAt < NEARBY_SCAN_MS) return;
         lastNearbyScanAt = now;
 
-        // If local has anything, show immediately.
+        // If you're currently placing or already have any anchors in memory, keep it visible.
+        if (currentPlacedAnchor != null || !wrappedAnchors.isEmpty() || !prevAnchors.isEmpty()) {
+            runOnUiThread(() -> btnNearby.setVisibility(View.VISIBLE));
+            return;
+        }
+
+        // If local (already-mounted) nearby items exist, show immediately.
         java.util.List<com.google.ar.core.examples.java.helloar.ui.NearbyAnchorsSheet.Item> local = gatherNearbyAnchors();
-        if (!local.isEmpty()) {
-            runOnUiThread(() -> btnNearby.setVisibility(View.GONE));
+        if (local != null && !local.isEmpty()) {
+            runOnUiThread(() -> btnNearby.setVisibility(View.VISIBLE));
             return;
         }
 
         // Else try Firestore.
         fetchNearbyFromFirestore(NEARBY_RADIUS_M, items ->
-                runOnUiThread(() -> btnNearby.setVisibility(items.isEmpty() ? View.GONE : View.VISIBLE)));
+                runOnUiThread(() -> btnNearby.setVisibility((items != null && !items.isEmpty()) ? View.VISIBLE : View.GONE))
+        );
     }
     @Nullable
     private static String firstPhotoUrlFrom(com.google.firebase.firestore.DocumentSnapshot d) {
